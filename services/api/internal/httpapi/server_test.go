@@ -192,3 +192,12 @@ func TestRequestIDIsSanitised(t *testing.T) {
 		}
 	}
 }
+
+func TestSafeMethod(t *testing.T) {
+	if got := safeMethod(http.MethodPost); got != http.MethodPost {
+		t.Fatalf("POST became %q", got)
+	}
+	if got := safeMethod("BREW\nfake=1"); got != "OTHER" {
+		t.Fatalf("unknown method logged as %q", got)
+	}
+}

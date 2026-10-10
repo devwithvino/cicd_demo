@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -42,12 +43,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 func instrument(route string, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		// Only trust a caller supplied request ID when it is short and plain,
-		// so it can not inject fake entries into the logs.
-		requestID := r.Header.Get("X-Request-ID")
-		if !validRequestID.MatchString(requestID) {
-			requestID = newRequestID()
-		}
+		requestID := safeRequestID(r.Header.Get("X-Request-ID"))
 		w.Header().Set("X-Request-ID", requestID)
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -58,7 +54,7 @@ func instrument(route string, logger *slog.Logger, next http.Handler) http.Handl
 		requestDuration.WithLabelValues("api", route).Observe(elapsed.Seconds())
 		logger.Info("request",
 			"request_id", requestID,
-			"method", r.Method,
+			"method", safeMethod(r.Method),
 			"route", route,
 			"status", rec.status,
 			"duration_ms", elapsed.Milliseconds(),
@@ -78,6 +74,31 @@ func cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Values that reach the logs from a client are reduced to known safe forms,
+// so a caller can never inject fake log entries.
+var (
+	stripLineBreaks = strings.NewReplacer("\n", "", "\r", "")
+	knownMethods    = map[string]bool{
+		http.MethodGet: true, http.MethodHead: true, http.MethodPost: true, http.MethodPut: true,
+		http.MethodPatch: true, http.MethodDelete: true, http.MethodOptions: true,
+	}
+)
+
+// safeRequestID keeps a caller supplied ID only when it is short and plain.
+func safeRequestID(id string) string {
+	if !validRequestID.MatchString(id) {
+		return newRequestID()
+	}
+	return stripLineBreaks.Replace(id)
+}
+
+func safeMethod(method string) string {
+	if knownMethods[method] {
+		return method
+	}
+	return "OTHER"
 }
 
 func newRequestID() string {
