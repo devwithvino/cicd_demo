@@ -56,6 +56,9 @@ export function createApp(cfg: Config, options: AppOptions): RequestListener {
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
 
+    // Public read only endpoints may be read cross origin by the status page.
+    if (path === "/healthz" || path === "/version") res.setHeader("Access-Control-Allow-Origin", "*");
+
     if (path === "/healthz") {
       sendJson(res, 200, { status: "ok" });
       return "/healthz";

@@ -54,6 +54,12 @@ describe("web server", () => {
     });
   });
 
+  it("lets the status page read health and version cross origin", async () => {
+    expect((await fetch(`${base}/version`)).headers.get("access-control-allow-origin")).toBe("*");
+    expect((await fetch(`${base}/healthz`)).headers.get("access-control-allow-origin")).toBe("*");
+    expect((await fetch(`${base}/config.json`)).headers.get("access-control-allow-origin")).toBeNull();
+  });
+
   it("serves runtime config without secrets", async () => {
     const cfg = (await (await fetch(`${base}/config.json`)).json()) as Record<string, unknown>;
     expect(Object.keys(cfg).sort()).toEqual(["environment", "repoUrl", "statusPageUrl"]);

@@ -201,6 +201,10 @@ jobs:
             echo "restore_seconds=${restore}"
           } >> "$GITHUB_OUTPUT"
           echo "Result: ${result}"
+          # Structured record read by the status page to compute DORA metrics.
+          jq -n --arg env "${ENVIRONMENT}" --arg version "${VERSION}" --arg sha "${GIT_SHA}"             --arg result "${result}" --arg failed "${failed}" --arg restore "${restore}"             --arg started "${T_DEPLOY_START:-}" --arg live "${T_DEPLOY_DONE:-}" --arg workflow "${GITHUB_WORKFLOW}"             '{environment: $env, version: $version, sha: $sha, result: $result, failedChecks: $failed,
+              restoreSeconds: ($restore | tonumber? // null), deployStarted: ($started | tonumber? // null),
+              deployDone: ($live | tonumber? // null), workflow: $workflow}' > deploy-record.json
 
       - name: Open an incident issue
         id: incident
@@ -287,6 +291,7 @@ jobs:
         with:
           name: deploy-state-${{ inputs.environment }}
           path: |
+            deploy-record.json
             deploy-state.json
             smoke.json
             verify.json

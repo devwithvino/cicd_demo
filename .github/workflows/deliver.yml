@@ -173,12 +173,18 @@ jobs:
           jobs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" --jq '.jobs')
           start=$(date -d "${COMMIT_TIME:-$(echo "${jobs}" | jq -r 'map(.started_at) | min')}" +%s)
           now=$(date +%s)
-          # Time spent waiting for the human approval is not pipeline time.
-          prod_created=$(echo "${jobs}" | jq -r '[.[] | select(.name | startswith("Production"))][0].created_at // empty')
-          prod_started=$(echo "${jobs}" | jq -r '[.[] | select(.name | startswith("Production"))][0].started_at // empty')
+          # Time spent waiting for the human approval is not pipeline time. While
+          # a job waits on an environment gate it has no steps, so the wait runs
+          # from job creation until its first step starts.
+          prod=$(echo "${jobs}" | jq -c '[.[] | select(.name | startswith("Production"))][0] // {}')
+          prod_created=$(echo "${prod}" | jq -r '.created_at // empty')
+          prod_first_step=$(echo "${prod}" | jq -r '.steps[0].started_at // empty')
           wait=0
-          if [ -n "${prod_created}" ] && [ -n "${prod_started}" ]; then
-            wait=$(( $(date -d "${prod_started}" +%s) - $(date -d "${prod_created}" +%s) ))
+          if [ -n "${prod_created}" ] && [ -n "${prod_first_step}" ]; then
+            wait=$(( $(date -d "${prod_first_step}" +%s) - $(date -d "${prod_created}" +%s) ))
+          elif [ -n "${prod_created}" ] && [ "$(echo "${prod}" | jq -r '.conclusion')" = "failure" ]; then
+            # A production job that failed without running a step was not approved.
+            status=cancelled
           fi
           lead=$(( now - start - wait ))
           fmt() { printf '%dm %02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
@@ -188,7 +194,7 @@ jobs:
           elif [ "${status}" = "rollback" ]; then
             summary="Version ${VERSION} failed verification in ${rolled_env} (${checks}) and was rolled back automatically. Service was restored in ${restore}s. Incident: ${incident}"
           elif [ "${status}" = "cancelled" ]; then
-            summary="Version ${VERSION} was not promoted to production. The approval was rejected or the run was cancelled."
+            summary="Version ${VERSION} was not promoted to production. The approval was declined or the run was cancelled. Production is unchanged."
           else
             summary="Version ${VERSION} did not reach production. The ${failed} stage failed, so nothing unverified was released."
           fi
