@@ -1,0 +1,146 @@
+# Nightly checks that catch what no code change would:
+#   - new CVEs published against the images that are running right now
+#   - production quietly breaking (one synthetic smoke test a day, kept to
+#     one run so free tier instance hours stay low)
+#   - dead links in the client facing documentation
+name: nightly
+
+on:
+  schedule:
+    - cron: "11 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+
+jobs:
+  rescan:
+    name: re-scan running images
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Scan the images staging and production run today
+        id: scan
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          registry="ghcr.io/${OWNER,,}/shipyard"
+          {
+            echo "| Environment | Service | Fixable HIGH or CRITICAL |"
+            echo "|---|---|---|"
+          } > table.md
+          : > findings.md
+          total=0
+          for env in production staging; do
+            for svc in api worker web; do
+              docker run --rm -v trivy-cache:/root/.cache "${TRIVY_IMAGE}" image --quiet \
+                --severity HIGH,CRITICAL --ignore-unfixed --format json "${registry}-${svc}:${env}" > scan.json
+              count=$(jq '[.Results[]?.Vulnerabilities[]?] | length' scan.json)
+              total=$(( total + count ))
+              echo "| ${env} | ${svc} | ${count} |" >> table.md
+              jq -r --arg e "${env}" --arg s "${svc}" '.Results[]?.Vulnerabilities[]? |
+                "- **\($e) \($s)**: \(.PkgName) \(.InstalledVersion) has \(.VulnerabilityID) (\(.Severity)), fixed in \(.FixedVersion)"' scan.json >> findings.md
+            done
+          done
+          { echo "### Nightly image re-scan"; echo ""; cat table.md; } >> "$GITHUB_STEP_SUMMARY"
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update a security issue
+        if: steps.scan.outputs.total != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOTAL: ${{ steps.scan.outputs.total }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly scan: fixable vulnerabilities in running images"
+          {
+            echo "The nightly re-scan found **${TOTAL}** fixable HIGH or CRITICAL vulnerabilities in images that are running now."
+            echo "A rebuild usually fixes them: merge the pending Dependabot updates or push any change to rebuild."
+            echo ""
+            cat table.md
+            echo ""
+            cat findings.md
+            echo ""
+            echo "Run: ${RUN_URL}"
+          } > body.md
+          gh label create security --color D93F0B --description "Security finding" --force > /dev/null
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label security --state open --search "${title} in:title" --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue edit "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file body.md
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file body.md --label security
+          fi
+          exit 1
+
+  synthetic:
+    name: synthetic production check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      ok: ${{ steps.smoke.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Smoke test production
+        id: smoke
+        continue-on-error: true
+        run: |
+          env=$(jq -c '.environments[] | select(.name == "production")' status-site/config.json)
+          python3 scripts/smoke_test.py \
+            --web "$(echo "${env}" | jq -r .web)" --api "$(echo "${env}" | jq -r .api)" \
+            --worker "$(echo "${env}" | jq -r .worker)" \
+            --title "Synthetic production check" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an incident when production fails
+        if: steps.smoke.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create incident --color B60205 --description "Automatic rollback or failed release" --force > /dev/null
+          gh issue create --repo "${GITHUB_REPOSITORY}" --label incident \
+            --title "Incident: nightly synthetic check failed in production" \
+            --body "The nightly smoke test against production failed. No deploy was running. Check the run, then follow the runbook. Run: ${RUN_URL}"
+          exit 1
+
+  notify:
+    name: Notify on production failure
+    needs: synthetic
+    if: always() && needs.synthetic.outputs.ok == 'false'
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: failure
+      title: "Nightly check: production is failing"
+      summary: "The daily synthetic smoke test against production failed while no deploy was running. An incident issue was opened."
+      environment: production
+      link: https://shipyard-web-production.onrender.com
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+  links:
+    name: documentation link check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check links in README and docs
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # Free tier Render services may be asleep, so they are covered by the
+          # synthetic check instead. Local addresses only exist on a laptop.
+          args: >-
+            --no-progress --max-retries 3 --timeout 30
+            --exclude 'onrender\.com' --exclude 'localhost' --exclude '127\.0\.0\.1' --exclude 'host\.docker\.internal'
+            README.md docs
+          fail: true

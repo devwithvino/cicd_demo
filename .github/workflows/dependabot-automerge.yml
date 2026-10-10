@@ -1,0 +1,40 @@
+# Auto merge for low risk Dependabot updates. Patch and minor updates are
+# queued for squash merge, which GitHub performs only after every required
+# check passes (CI, security, PR title). Major updates always wait for a human.
+name: dependabot-automerge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  automerge:
+    name: queue safe update for merge
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'devwithvino/cicd_demo'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read the update metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto merge for patch and minor updates
+        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE: ${{ steps.meta.outputs.update-type }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          gh pr merge --auto --squash "${PR_URL}"
+          echo "Queued for auto merge: ${DEPS} (${UPDATE}). GitHub merges it once all required checks pass." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Leave major updates for review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: echo "Major update for ${DEPS}. Needs a human review." >> "$GITHUB_STEP_SUMMARY"

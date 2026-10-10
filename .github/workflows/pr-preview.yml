@@ -19,7 +19,12 @@ concurrency:
 jobs:
   version:
     name: Preview version
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    # Forks and Dependabot never receive Actions secrets, so they get CI and
+    # security checks but no preview. Their merges still run the full delivery.
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -183,7 +188,10 @@ jobs:
 
   cleanup:
     name: Delete preview
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     environment:
       name: preview
