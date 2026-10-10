@@ -53,5 +53,3 @@ status-site/data/
 id_rsa*
 id_ed25519*
 
-# Load test output
-tests/load/k6-summary.json

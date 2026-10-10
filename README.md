@@ -187,10 +187,12 @@ flowchart TD
     build --> publish[Merge into multi-arch images<br/>push to GHCR, record digests]
     publish --> stg[Deploy digests to staging]
     stg --> stgsmoke{Staging<br/>smoke test}
+    publish --> kind[Same digests on Kubernetes<br/>Kind, Helm, helm test, k6]
     stgsmoke -- pass --> stgtag[Move staging tag]
     stgsmoke -- fail --> rb1[Automatic rollback<br/>verify, open incident]
     rb1 --> stop1([Stop. Nothing reaches production])
     stgtag --> approval{{Human approval<br/>production environment}}
+    kind -- pass --> approval
     approval -- approved --> prd[Deploy the same digests to production]
     approval -- rejected --> stop2([Stop. Production unchanged])
     prd --> prdsmoke{Production<br/>smoke test}
@@ -355,6 +357,39 @@ Render's multi service Preview Environments need a paid plan, so [`scripts/rende
 
 Pull requests from forks get the full CI and security checks but no preview, because they never receive secrets.
 
+### Deploy anywhere: the same images on Kubernetes
+
+Render is one target, not a dependency. Every delivery also installs the **exact same signed digests** on a fresh Kubernetes cluster ([Kind](https://kind.sigs.k8s.io/)) inside GitHub Actions, in parallel with staging. Production needs both to pass. Every pull request runs it too.
+
+[`_kind-e2e.yml`](.github/workflows/_kind-e2e.yml):
+
+1. Verifies the signatures of the digests it was handed.
+2. Creates a Kind cluster and installs the [Helm chart](deploy/helm/shipyard) pinned to those digests.
+3. Runs `helm test`, which checks health, wiring and a full job round trip from inside the cluster.
+4. Runs the same smoke test used on Render, through port forwards.
+5. Runs a [k6](https://k6.io) performance gate: 10 virtual users for 30 seconds, failing on more than 1% errors, read p95 over 300 ms or write p95 over 500 ms.
+6. Dumps pod state and logs if anything fails.
+
+The chart is written for real clusters, not just the demo:
+
+| Concern | How the chart handles it |
+|---|---|
+| Image provenance | Images pinned by digest |
+| Least privilege | Non root users, read only root filesystem, all Linux capabilities dropped, seccomp `RuntimeDefault`, no service account token |
+| Network | Default deny network policies. Only web is reachable from anywhere. api accepts web, worker accepts api, Key Value accepts api and worker |
+| Health | Liveness and readiness probes per service, readiness tied to Key Value |
+| Capacity | Requests and limits for every container, two replicas for api and web |
+| Data | In cluster Valkey by default, or any managed Redis compatible URL |
+
+```bash
+helm install shipyard deploy/helm/shipyard \
+  --set images.api.digest=sha256:... \
+  --set images.worker.digest=sha256:... \
+  --set images.web.digest=sha256:...
+```
+
+CI lints the chart and validates the rendered manifests against Kubernetes 1.33 schemas with kubeconform.
+
 ### Protecting production from infrastructure syncs
 
 Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If the Blueprint pointed at `main`, an infrastructure edit could push an unapproved build into production. Instead, each environment has its own moving tag that only advances after that environment's smoke test passes. A Blueprint sync can therefore only redeploy an image that already passed in that environment.
@@ -393,6 +428,7 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 | [`pr-preview.yml`](.github/workflows/pr-preview.yml) | Pull requests (opened, updated, closed) | Builds, verifies, deploys and smoke tests a preview environment, comments the links, deletes it on close |
 | [`preview-janitor.yml`](.github/workflows/preview-janitor.yml) | Nightly, manual run | Deletes previews whose pull request is no longer open |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
+| [`_kind-e2e.yml`](.github/workflows/_kind-e2e.yml) | Called by deliver and pr-preview | Same digests on a Kind cluster: verify, helm install, helm test, smoke test, k6 performance gate |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
 
 Pipeline practices applied throughout:
@@ -457,6 +493,20 @@ To run the released images from GHCR instead of building:
 SHIPYARD_TAG=0.1.0 docker compose up
 ```
 
+Add Prometheus and a ready made Grafana dashboard (services up, request rate, error rate, p95 latency, jobs processed, job duration):
+
+```bash
+docker compose --profile observability up --build
+```
+
+Grafana opens at http://localhost:3000 with the dashboard as its home page. Prometheus is at http://localhost:9090.
+
+Run the k6 performance test against the local stack:
+
+```bash
+docker run --rm -v "$PWD/tests/load:/scripts" grafana/k6:2.3.0 run -e BASE_URL=http://host.docker.internal:8080 /scripts/smoke.js
+```
+
 Smoke test the local stack with the same script the pipeline uses:
 
 ```bash
@@ -482,6 +532,10 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 │   ├── api/          Go API: cmd/, internal/, tests, Dockerfile
 │   ├── worker/       Python worker: src/, tests/, uv.lock, Dockerfile
 │   └── web/          TypeScript dashboard: src/server, src/client, public/, Dockerfile
+├── deploy/
+│   ├── helm/shipyard/     Hardened Helm chart with network policies and helm test
+│   └── observability/     Prometheus config and the Grafana dashboard
+├── tests/load/            k6 performance gate
 ├── scripts/
 │   ├── next_version.py    Semantic version from conventional commits
 │   ├── render_deploy.py   Deploy, record and roll back image digests on Render
@@ -510,8 +564,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 4 | Status page with live health and DORA metrics on GitHub Pages | Done |
 | 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance, branch protection | Done |
 | 6 | Pull request preview environments on Render | Done |
-| 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Next |
-| 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Planned |
+| 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Done |
+| 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Next |
 | 9 | Case study, runbook, demo script and services overview | Planned |
 
 ## License

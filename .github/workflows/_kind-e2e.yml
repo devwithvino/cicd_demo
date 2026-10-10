@@ -96,9 +96,12 @@ jobs:
 
       - name: Performance gate (k6)
         run: |
-          docker run --rm --network host -v "${PWD}/tests/load:/scripts" \
+          # k6 runs as a non root user, so it writes its summary to its own folder.
+          out="${RUNNER_TEMP}/k6"
+          mkdir -p "${out}" && chmod 777 "${out}"
+          docker run --rm --network host -v "${PWD}/tests/load:/scripts:ro" -v "${out}:/out" \
             grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34 \
-            run --quiet -e BASE_URL=http://127.0.0.1:18082 --summary-export /scripts/k6-summary.json /scripts/smoke.js
+            run --quiet -e BASE_URL=http://127.0.0.1:18082 --summary-export /out/summary.json /scripts/smoke.js
           jq -r '.metrics as $m | [
               "### Performance gate (k6): passed",
               "",
@@ -108,7 +111,7 @@ jobs:
               "| Error rate | \($m.http_req_failed.value * 100 | floor)% | under 1% |",
               "| Read p95 | \($m["http_req_duration{kind:read}"]["p(95)"] | floor) ms | under 300 ms |",
               "| Write p95 | \($m["http_req_duration{kind:write}"]["p(95)"] | floor) ms | under 500 ms |"
-            ] | .[]' tests/load/k6-summary.json >> "$GITHUB_STEP_SUMMARY"
+            ] | .[]' "${out}/summary.json" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summary
         run: |
