@@ -40,6 +40,12 @@ on:
         required: false
         type: boolean
         default: true
+    secrets:
+      RENDER_API_KEY:
+        description: >-
+          Render API key. Callers pass nothing: the job reads the value stored
+          in its GitHub environment, which takes precedence over the caller.
+        required: false
     outputs:
       result:
         description: success, rolled_back, rollback_failed or failed
