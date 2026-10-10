@@ -1,0 +1,9 @@
+# Gitleaks configuration: the default rules plus narrowly scoped allowlists.
+# Every entry must say why the match is not a secret.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Render service IDs are public identifiers shown in URLs and the dashboard, not credentials"
+regexes = ['''srv-[a-z0-9]{20}''']
