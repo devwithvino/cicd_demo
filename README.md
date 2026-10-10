@@ -34,6 +34,7 @@ For a business reader, this is what the project shows:
 - **Security is a gate, not an afterthought.** Every change is scanned for leaked secrets, code vulnerabilities and risky dependencies. Every container image is scanned, comes with a full parts list (SBOM), and is cryptographically signed. Production refuses anything the pipeline did not sign.
 - **Software is built exactly once.** The same container image that passed testing is the one that runs in production. Nothing is rebuilt along the way, so what was tested is what customers get.
 - **Releases are verified, not hoped for.** After every deploy, an automated smoke test sends a real job through the live system and confirms every service runs the expected version.
+- **Every proposed change can be tried before it is accepted.** Each pull request gets its own temporary, fully working copy of the app with a link posted on the pull request. It disappears when the pull request closes.
 - **People stay in control.** Staging updates automatically. Production needs one click of approval from a named reviewer.
 - **Bad releases undo themselves.** If a release fails its checks after going live, the pipeline puts the previous version back on its own, confirms it works, and opens an incident report. In the recorded demo, service was restored in 28 seconds.
 - **The team is told what happened.** Every delivery posts a plain language summary to the team chat, with the time it took.
@@ -328,6 +329,32 @@ GitHub's own secret scanning with **push protection**, the dependency graph and 
 
 During the build of this project a GitHub App private key file was saved in the working folder and committed by mistake. The new gitleaks gate flagged it on the first scan, about two minutes after the push. The key was deleted and replaced, the file removed, key patterns added to `.gitignore`, and the finding recorded with its resolution in [`.gitleaksignore`](.gitleaksignore). This is exactly the failure the gate exists for, and it is why scanning runs on every push and nightly over the full history.
 
+### Pull request preview environments
+
+Every pull request from this repository gets its own running copy of the whole app, posted as a link on the pull request ([example on #5](https://github.com/devwithvino/cicd_demo/pull/5)).
+
+```mermaid
+flowchart LR
+    pr([Pull request opened or updated]) --> build[Build once<br/>scan, SBOM, sign]
+    build --> verify[Verify signature<br/>identity: this pull request]
+    verify --> up[Create or update previews<br/>api, worker, web]
+    up --> wire[Wire previews together<br/>data under pr-N: prefix]
+    wire --> smoke{Smoke test}
+    smoke --> comment[Sticky comment<br/>with links and results]
+    closed([Pull request closed or merged]) --> down[Delete previews<br/>update comment]
+    nightly([Every night]) --> janitor[Delete orphaned previews]
+```
+
+Render's multi service Preview Environments need a paid plan, so [`scripts/render_preview.py`](scripts/render_preview.py) assembles the same thing from free single service previews:
+
+1. Creates a preview of each staging service named `shipyard-<service>-pr-<number>`, or reuses it on later pushes.
+2. Copies the staging configuration, then overrides it: `APP_ENV=pr-N`, a `pr-N:` Key Value prefix so preview data never mixes with staging or production, and the api and web pointed at the preview worker and preview api.
+3. Deploys the pull request's signed digests and waits until all three are live.
+
+[`pr-preview.yml`](.github/workflows/pr-preview.yml) then smoke tests the preview with the same script used for staging and production, and keeps one comment on the pull request up to date. Before deploying, it verifies the images were signed by this repository's build running for that exact pull request. When the pull request closes, the previews are deleted and the comment says so. Render does not delete image previews on its own, so [`preview-janitor.yml`](.github/workflows/preview-janitor.yml) removes any preview whose pull request is no longer open, every night.
+
+Pull requests from forks get the full CI and security checks but no preview, because they never receive secrets.
+
 ### Protecting production from infrastructure syncs
 
 Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If the Blueprint pointed at `main`, an infrastructure edit could push an unapproved build into production. Instead, each environment has its own moving tag that only advances after that environment's smoke test passes. A Blueprint sync can therefore only redeploy an image that already passed in that environment.
@@ -363,6 +390,8 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 | [`status-page.yml`](.github/workflows/status-page.yml) | After deploy related runs, every 6 hours, manual run | Recomputes DORA metrics and publishes the status page to GitHub Pages |
 | [`security.yml`](.github/workflows/security.yml) | Pull requests, pushes to `main`, nightly | gitleaks, CodeQL, dependency review and Trivy config scan, reported to the Security tab |
 | [`pr-title.yml`](.github/workflows/pr-title.yml) | Pull requests | Conventional Commit title check |
+| [`pr-preview.yml`](.github/workflows/pr-preview.yml) | Pull requests (opened, updated, closed) | Builds, verifies, deploys and smoke tests a preview environment, comments the links, deletes it on close |
+| [`preview-janitor.yml`](.github/workflows/preview-janitor.yml) | Nightly, manual run | Deletes previews whose pull request is no longer open |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
 
@@ -380,7 +409,7 @@ Pipeline practices applied throughout:
 |---|---|---|
 | `staging` | Automatic | Render API key (secret), service IDs and URLs (variables) |
 | `production` | Required reviewer, `main` branch only | Its own Render API key, released to a job only after approval |
-| `preview` | Automatic | Reserved for pull request previews |
+| `preview` | Automatic | Render API key (secret) and the staging service IDs that previews are created from (variables) |
 | `infra` | Required reviewer, `main` branch only | Reserved for infrastructure as code |
 
 - Images are pushed with the short lived `GITHUB_TOKEN`. There is no personal access token anywhere.
@@ -456,6 +485,7 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 ├── scripts/
 │   ├── next_version.py    Semantic version from conventional commits
 │   ├── render_deploy.py   Deploy, record and roll back image digests on Render
+│   ├── render_preview.py  Wired pull request previews on Render, teardown and janitor
 │   ├── smoke_test.py      Post deploy verification used everywhere
 │   ├── dora_metrics.py    DORA metrics and deployment history from real runs
 │   └── prose_lint.py      House writing style check
@@ -479,8 +509,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Done |
 | 4 | Status page with live health and DORA metrics on GitHub Pages | Done |
 | 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance, branch protection | Done |
-| 6 | Pull request preview environments on Render | Next |
-| 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Planned |
+| 6 | Pull request preview environments on Render | Done |
+| 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Next |
 | 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Planned |
 | 9 | Case study, runbook, demo script and services overview | Planned |
 

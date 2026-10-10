@@ -1,0 +1,208 @@
+# Pull request preview environments: every pull request gets its own running
+# copy of the app on Render, built once, signed, verified and smoke tested,
+# with the links posted on the pull request. Closing the pull request deletes
+# it. Pull requests from forks never receive secrets, so they get the normal
+# CI and security checks but no preview.
+name: pr-preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions: {}
+
+# New pushes replace an in flight preview deploy. Cleanup is never cancelled.
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+jobs:
+  version:
+    name: Preview version
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: echo "version=$(python3 scripts/next_version.py)-pr.${PR}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build preview
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      security-events: write
+    uses: ./.github/workflows/_build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      git_sha: ${{ github.event.pull_request.head.sha }}
+      extra_tags: pr-${{ github.event.pull_request.number }}
+
+  deploy:
+    name: Deploy preview
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: preview
+      url: ${{ steps.up.outputs.web_url }}
+    permissions:
+      contents: read
+      pull-requests: write
+      attestations: read
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      VERSION: ${{ needs.version.outputs.version }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REGISTRY: ${{ needs.build.outputs.registry }}
+      DIGESTS: ${{ needs.build.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # The images must have been signed by this repository's build workflow
+      # running for this pull request.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify signatures and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          identity="^https://github\.com/${REPO}/\.github/workflows/_build\.yml@refs/pull/${PR}/merge$"
+          for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
+            ref="${REGISTRY}-${svc}@$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')"
+            cosign verify "${ref}" --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "${identity}" > /dev/null
+            gh attestation verify "oci://${ref}" --repo "${REPO}" > /dev/null
+            echo "${svc}: signature and provenance verified"
+          done
+
+      - name: Create or update the preview environment
+        id: up
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          BASE: api=${{ vars.RENDER_API_SERVICE_ID }},worker=${{ vars.RENDER_WORKER_SERVICE_ID }},web=${{ vars.RENDER_WEB_SERVICE_ID }}
+        run: |
+          cd scripts
+          python3 render_preview.py up --pr "${PR}" --base "${BASE}" \
+            --registry "${REGISTRY}" --digests "${DIGESTS}" --out ../preview.json
+          cd ..
+          for svc in web api worker; do
+            echo "${svc}_url=$(jq -r --arg s "${svc}" '.[$s].url' preview.json)" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Smoke test the preview
+        id: smoke
+        env:
+          WEB: ${{ steps.up.outputs.web_url }}
+          API: ${{ steps.up.outputs.api_url }}
+          WORKER: ${{ steps.up.outputs.worker_url }}
+        run: |
+          python3 scripts/smoke_test.py --web "${WEB}" --api "${API}" --worker "${WORKER}" \
+            --expect-sha "${HEAD_SHA}" --title "Preview smoke test: pr-${PR}" \
+            --summary "$GITHUB_STEP_SUMMARY" --json-out smoke.json
+
+      - name: Comment on the pull request
+        if: always() && steps.up.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEB: ${{ steps.up.outputs.web_url }}
+          API: ${{ steps.up.outputs.api_url }}
+          WORKER: ${{ steps.up.outputs.worker_url }}
+          SMOKE: ${{ steps.smoke.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "${SMOKE}" = "success" ]; then status="✅ Preview is live and passed its smoke test"
+          else status="❌ Preview deploy or smoke test failed. See the run for details"; fi
+          checks=""
+          [ -f smoke.json ] && checks=$(jq -r '.checks[] | "| \(.check) | \(if .ok then "pass" else "FAIL" end) | \(.detail) |"' smoke.json)
+          {
+            echo "<!-- shipyard-preview -->"
+            echo "### Preview environment for #${PR}"
+            echo ""
+            echo "${status}."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **App** | ${WEB:-not deployed} |"
+            echo "| API | ${API:-not deployed} |"
+            echo "| Worker | ${WORKER:-not deployed} |"
+            echo "| Version | \`${VERSION}\` at \`${HEAD_SHA:0:7}\` |"
+            echo "| Images | built once, scanned, signed and verified |"
+            echo "| Data | isolated under the \`pr-${PR}:\` Key Value prefix |"
+            echo "| Run | ${RUN_URL} |"
+            if [ -n "${checks}" ]; then
+              echo ""
+              echo "<details><summary>Smoke test</summary>"
+              echo ""
+              echo "| Check | Result | Detail |"
+              echo "|---|---|---|"
+              echo "${checks}"
+              echo ""
+              echo "</details>"
+            fi
+            echo ""
+            echo "Free tier previews sleep when idle and take about a minute to wake. This environment is deleted when the pull request closes."
+          } > comment.md
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments?per_page=100" \
+            --jq '[.[] | select(.body | startswith("<!-- shipyard-preview -->"))][0].id // empty')
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -F body=@comment.md > /dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@comment.md > /dev/null
+          fi
+
+  cleanup:
+    name: Delete preview
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    environment:
+      name: preview
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Delete the preview services
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: cd scripts && python3 render_preview.py down --pr "${PR}"
+
+      - name: Update the pull request comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGED: ${{ github.event.pull_request.merged }}
+        run: |
+          outcome=$([ "${MERGED}" = "true" ] && echo "merged" || echo "closed")
+          {
+            echo "<!-- shipyard-preview -->"
+            echo "### Preview environment for #${PR}"
+            echo ""
+            echo "🧹 The pull request was ${outcome}, so its preview environment was deleted. Nothing is left running."
+          } > comment.md
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments?per_page=100" \
+            --jq '[.[] | select(.body | startswith("<!-- shipyard-preview -->"))][0].id // empty')
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -F body=@comment.md > /dev/null
+          fi
