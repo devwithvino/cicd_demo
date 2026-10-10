@@ -63,3 +63,18 @@ def test_metrics_exposed(base_url: str) -> None:
 def test_unknown_path_is_404(base_url: str) -> None:
     code, _ = get(f"{base_url}/nope")
     assert code == 404
+
+
+def test_version_includes_image_ref_when_deployed() -> None:
+    cfg = Config(
+        port=0,
+        environment="staging",
+        kv_url="redis://unused",
+        key_prefix="stg:",
+        repo_url="",
+        version="1.0.0",
+        commit="abc",
+        build_time="t",
+        image_ref="ghcr.io/owner/shipyard-worker@sha256:123",
+    )
+    assert cfg.version_info()["imageRef"] == "ghcr.io/owner/shipyard-worker@sha256:123"

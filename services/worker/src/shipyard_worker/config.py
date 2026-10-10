@@ -22,6 +22,7 @@ class Config:
     version: str
     commit: str
     build_time: str
+    image_ref: str = ""
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
@@ -35,6 +36,7 @@ class Config:
             version=os.environ.get("APP_VERSION", "dev"),
             commit=os.environ.get("GIT_SHA", "unknown"),
             build_time=os.environ.get("BUILD_TIME", "unknown"),
+            image_ref=os.environ.get("IMAGE_REF", ""),
         )
 
     def version_info(self) -> dict[str, object]:
@@ -49,6 +51,8 @@ class Config:
             "startedAt": self.started_at.isoformat(timespec="seconds"),
             "uptimeSeconds": int(uptime.total_seconds()),
         }
+        if self.image_ref:
+            info["imageRef"] = self.image_ref
         if self.repo_url and self.commit != "unknown":
             info["commitUrl"] = f"{self.repo_url}/commit/{self.commit}"
         return info

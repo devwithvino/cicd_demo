@@ -9,8 +9,9 @@
 #     and are isolated by KEY_PREFIX.
 #   - Free web services can not receive private network traffic, so services
 #     call each other over their public onrender.com URLs.
-#   - The image tag below is only used for the very first deploy. After that
-#     the pipeline deploys specific digests through the Render API.
+#   - The pipeline deploys exact digests through the Render API. The image
+#     tags below (staging, production) only move after that environment's
+#     smoke test passes, so a Blueprint sync can only redeploy a verified image.
 
 previews:
   generation: "off"
@@ -29,7 +30,7 @@ services:
     name: shipyard-api-staging
     runtime: image
     image:
-      url: ghcr.io/devwithvino/shipyard-api:main
+      url: ghcr.io/devwithvino/shipyard-api:staging
     plan: free
     region: oregon
     healthCheckPath: /healthz
@@ -45,7 +46,7 @@ services:
     name: shipyard-worker-staging
     runtime: image
     image:
-      url: ghcr.io/devwithvino/shipyard-worker:main
+      url: ghcr.io/devwithvino/shipyard-worker:staging
     plan: free
     region: oregon
     healthCheckPath: /healthz
@@ -60,7 +61,7 @@ services:
     name: shipyard-web-staging
     runtime: image
     image:
-      url: ghcr.io/devwithvino/shipyard-web:main
+      url: ghcr.io/devwithvino/shipyard-web:staging
     plan: free
     region: oregon
     healthCheckPath: /healthz
@@ -76,7 +77,7 @@ services:
     name: shipyard-api-production
     runtime: image
     image:
-      url: ghcr.io/devwithvino/shipyard-api:main
+      url: ghcr.io/devwithvino/shipyard-api:production
     plan: free
     region: oregon
     healthCheckPath: /healthz
@@ -92,7 +93,7 @@ services:
     name: shipyard-worker-production
     runtime: image
     image:
-      url: ghcr.io/devwithvino/shipyard-worker:main
+      url: ghcr.io/devwithvino/shipyard-worker:production
     plan: free
     region: oregon
     healthCheckPath: /healthz
@@ -107,7 +108,7 @@ services:
     name: shipyard-web-production
     runtime: image
     image:
-      url: ghcr.io/devwithvino/shipyard-web:main
+      url: ghcr.io/devwithvino/shipyard-web:production
     plan: free
     region: oregon
     healthCheckPath: /healthz
