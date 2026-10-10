@@ -1,0 +1,45 @@
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Go
+services/api/bin/
+*.test
+coverage.out
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+coverage/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+.terraform.lock.hcl.bak
+
+# Build and scan outputs
+sbom*.json
+trivy-*.json
+*.sarif
+status-site/data/
