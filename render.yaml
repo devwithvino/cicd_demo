@@ -1,0 +1,117 @@
+# Render Blueprint: the hosted infrastructure for Shipyard, kept as code.
+#
+# Six free web services (api, worker, web for staging and production) and one
+# free Key Value instance. Every service is image backed: Render never builds
+# anything, it only runs the exact image digests the pipeline promotes.
+#
+# Free tier notes (see docs/free-tier-limits.md):
+#   - Only one free Key Value instance is allowed, so environments share it
+#     and are isolated by KEY_PREFIX.
+#   - Free web services can not receive private network traffic, so services
+#     call each other over their public onrender.com URLs.
+#   - The image tag below is only used for the very first deploy. After that
+#     the pipeline deploys specific digests through the Render API.
+
+previews:
+  generation: "off"
+
+services:
+  # Shared job queue
+  - type: keyvalue
+    name: shipyard-kv
+    plan: free
+    region: oregon
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  # Staging
+  - type: web
+    name: shipyard-api-staging
+    runtime: image
+    image:
+      url: ghcr.io/devwithvino/shipyard-api:main
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - { key: APP_ENV, value: staging }
+      - { key: KEY_PREFIX, value: "stg:" }
+      - { key: WORKER_URL, value: https://shipyard-worker-staging.onrender.com }
+      - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
+      - key: KV_URL
+        fromService: { type: keyvalue, name: shipyard-kv, property: connectionString }
+
+  - type: web
+    name: shipyard-worker-staging
+    runtime: image
+    image:
+      url: ghcr.io/devwithvino/shipyard-worker:main
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - { key: APP_ENV, value: staging }
+      - { key: KEY_PREFIX, value: "stg:" }
+      - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
+      - key: KV_URL
+        fromService: { type: keyvalue, name: shipyard-kv, property: connectionString }
+
+  - type: web
+    name: shipyard-web-staging
+    runtime: image
+    image:
+      url: ghcr.io/devwithvino/shipyard-web:main
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - { key: APP_ENV, value: staging }
+      - { key: API_URL, value: https://shipyard-api-staging.onrender.com }
+      - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
+      - { key: STATUS_PAGE_URL, value: https://devwithvino.github.io/cicd_demo }
+
+  # Production
+  - type: web
+    name: shipyard-api-production
+    runtime: image
+    image:
+      url: ghcr.io/devwithvino/shipyard-api:main
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - { key: APP_ENV, value: production }
+      - { key: KEY_PREFIX, value: "prd:" }
+      - { key: WORKER_URL, value: https://shipyard-worker-production.onrender.com }
+      - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
+      - key: KV_URL
+        fromService: { type: keyvalue, name: shipyard-kv, property: connectionString }
+
+  - type: web
+    name: shipyard-worker-production
+    runtime: image
+    image:
+      url: ghcr.io/devwithvino/shipyard-worker:main
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - { key: APP_ENV, value: production }
+      - { key: KEY_PREFIX, value: "prd:" }
+      - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
+      - key: KV_URL
+        fromService: { type: keyvalue, name: shipyard-kv, property: connectionString }
+
+  - type: web
+    name: shipyard-web-production
+    runtime: image
+    image:
+      url: ghcr.io/devwithvino/shipyard-web:main
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - { key: APP_ENV, value: production }
+      - { key: API_URL, value: https://shipyard-api-production.onrender.com }
+      - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
+      - { key: STATUS_PAGE_URL, value: https://devwithvino.github.io/cicd_demo }
