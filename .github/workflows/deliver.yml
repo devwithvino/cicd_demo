@@ -49,6 +49,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+      security-events: write
     uses: ./.github/workflows/_build.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -61,6 +64,7 @@ jobs:
       contents: read
       packages: write
       issues: write
+      attestations: read
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment: staging
@@ -68,7 +72,6 @@ jobs:
       registry: ${{ needs.build.outputs.registry }}
       version: ${{ needs.version.outputs.version }}
       git_sha: ${{ github.sha }}
-    secrets: inherit
 
   # The production environment requires a reviewer, so this job waits for a
   # human approval. It deploys the identical digests that passed staging.
@@ -79,6 +82,7 @@ jobs:
       contents: read
       packages: write
       issues: write
+      attestations: read
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment: production
@@ -86,7 +90,6 @@ jobs:
       registry: ${{ needs.build.outputs.registry }}
       version: ${{ needs.version.outputs.version }}
       git_sha: ${{ github.sha }}
-    secrets: inherit
 
   release:
     name: Release
@@ -129,6 +132,13 @@ jobs:
               "${REGISTRY}-${svc}@${digest}"
           done
 
+      - name: Download SBOMs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: sboms
+          pattern: sbom-*
+          merge-multiple: true
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
@@ -147,8 +157,19 @@ jobs:
               echo "| ${svc} | \`${REGISTRY}-${svc}@$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')\` |"
             done
           } > notes.md
+          {
+            echo ""
+            echo "## Supply chain"
+            echo ""
+            echo "Every image is signed with cosign (keyless, GitHub OIDC) and carries SLSA build provenance"
+            echo "and an SPDX SBOM as attestations. The SBOM files are attached below. Verify an image with:"
+            echo ""
+            echo '```'
+            echo "gh attestation verify oci://${REGISTRY}-api@$(echo "${DIGESTS}" | jq -r .api) --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> notes.md
           gh release create "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
-            --title "v${VERSION}" --notes-file notes.md --generate-notes
+            --title "v${VERSION}" --notes-file notes.md --generate-notes sboms/*.spdx.json
 
   report:
     name: Report

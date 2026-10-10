@@ -57,6 +57,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+      security-events: write
     uses: ./.github/workflows/_build.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -70,6 +73,7 @@ jobs:
       contents: read
       packages: write
       issues: write
+      attestations: read
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment: ${{ inputs.target }}
@@ -77,7 +81,6 @@ jobs:
       registry: ${{ needs.build.outputs.registry }}
       version: ${{ needs.version.outputs.version }}
       git_sha: ${{ github.sha }}
-    secrets: inherit
 
   verify:
     name: Verify automatic recovery

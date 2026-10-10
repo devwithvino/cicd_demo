@@ -231,7 +231,8 @@ def observed_days(data: dict[str, Any], window_days: int, now: datetime) -> floa
 
 
 def dora(data: dict[str, Any], window_days: float) -> dict[str, Any]:
-    prod = [d for d in data["deployments"] if d["environment"] == "production" and d["result"] != "not_approved"]
+    prod = [d for d in data["deployments"]
+            if d["environment"] == "production" and d["result"] not in ("not_approved", "refused")]
     real = [d for d in prod if not d["demo"]]
     successes = [d for d in real if d["result"] == "success"]
     failures = [d for d in real if d["result"] in FAILED_RESULTS]

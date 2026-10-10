@@ -115,6 +115,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+      security-events: write
     strategy:
       matrix:
         service: [api, worker, web]
@@ -133,34 +136,126 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create multi-arch image and tags
+      # Publish under the immutable commit tag only. Moving tags are added at
+      # the end, after the image has passed every gate below.
+      - name: Create multi-arch image
         id: merge
         env:
           OWNER: ${{ github.repository_owner }}
-          VERSION: ${{ inputs.version }}
           INPUT_SHA: ${{ inputs.git_sha }}
-          EXTRA_TAGS: ${{ inputs.extra_tags }}
-          RUN_NUMBER: ${{ github.run_number }}
+          SERVICE: ${{ matrix.service }}
         run: |
-          image="${REGISTRY}/${OWNER,,}/shipyard-${{ matrix.service }}"
+          image="${REGISTRY}/${OWNER,,}/shipyard-${SERVICE}"
           sha="${INPUT_SHA:-$GITHUB_SHA}"
-          tags=(-t "${image}:sha-${sha:0:7}" -t "${image}:${VERSION}-rc.${RUN_NUMBER}")
-          while IFS= read -r tag; do
-            [ -n "${tag}" ] && tags+=(-t "${image}:${tag}")
-          done <<< "${EXTRA_TAGS}"
-
           sources=()
           for file in /tmp/digests/*; do
             sources+=("${image}@sha256:$(basename "${file}")")
           done
-
-          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools create -t "${image}:sha-${sha:0:7}" "${sources[@]}"
           digest=$(docker buildx imagetools inspect "${image}:sha-${sha:0:7}" --format '{{json .Manifest}}' | jq -r .digest)
           echo "Published ${image}@${digest}"
+          {
+            echo "image=${image}"
+            echo "digest=${digest}"
+            echo "ref=${image}@${digest}"
+          } >> "$GITHUB_OUTPUT"
 
+      # Gate 1: no known, fixable HIGH or CRITICAL vulnerabilities.
+      - name: Vulnerability report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.merge.outputs.ref }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Upload vulnerability report
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.service)) != ''
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}
+
+      - name: Fail on fixable HIGH or CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.merge.outputs.ref }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+      # Gate 2: a software bill of materials for every image.
+      - name: Generate SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ steps.merge.outputs.ref }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.service }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      # Gate 3: keyless signature and attestations. The identity is this
+      # workflow, proven through GitHub's OIDC token. No signing key exists.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign image with cosign (keyless)
+        env:
+          REF: ${{ steps.merge.outputs.ref }}
+        run: cosign sign --yes "${REF}"
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.merge.outputs.image }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ steps.merge.outputs.image }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          sbom-path: sbom-${{ matrix.service }}.spdx.json
+          push-to-registry: true
+
+      - name: Add release candidate and extra tags
+        env:
+          IMAGE: ${{ steps.merge.outputs.image }}
+          REF: ${{ steps.merge.outputs.ref }}
+          VERSION: ${{ inputs.version }}
+          EXTRA_TAGS: ${{ inputs.extra_tags }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          tags=(-t "${IMAGE}:${VERSION}-rc.${RUN_NUMBER}")
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] && tags+=(-t "${IMAGE}:${tag}")
+          done <<< "${EXTRA_TAGS}"
+          docker buildx imagetools create "${tags[@]}" "${REF}"
           mkdir -p /tmp/index
-          echo "${digest}" > "/tmp/index/${{ matrix.service }}"
-          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "${REF#*@}" > "/tmp/index/${SERVICE}"
+          packages=$(jq '.packages | length' "sbom-${SERVICE}.spdx.json")
+          {
+            echo "### ${SERVICE}: scanned, signed and attested"
+            echo ""
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            echo "| Vulnerability scan | No fixable HIGH or CRITICAL findings |"
+            echo "| SBOM | ${packages} packages (SPDX) |"
+            echo "| Signature | cosign keyless, identity from GitHub OIDC |"
+            echo "| Attestations | SLSA build provenance and SBOM, stored with the image |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom-${{ matrix.service }}.spdx.json
+          retention-days: 90
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

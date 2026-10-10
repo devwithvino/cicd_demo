@@ -40,6 +40,7 @@ jobs:
       contents: read
       packages: write
       issues: write
+      attestations: read
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment: ${{ inputs.environment }}
@@ -47,7 +48,6 @@ jobs:
       registry: ${{ needs.resolve.outputs.registry }}
       version: ${{ needs.resolve.outputs.version }}
       git_sha: ${{ needs.resolve.outputs.git_sha }}
-    secrets: inherit
 
   notify:
     name: Notify

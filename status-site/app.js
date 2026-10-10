@@ -42,6 +42,7 @@ const RESULT_LABELS = {
   rollback_failed: "rollback failed",
   failed: "failed",
   not_approved: "not approved",
+  refused: "refused, unsigned",
 };
 
 const RATING_TEXT = {

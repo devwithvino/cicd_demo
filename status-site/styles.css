@@ -85,7 +85,7 @@ h3 { margin: 0; font-size: 1.05rem; text-transform: capitalize; }
 }
 .chip.good, .chip.elite, .chip.success, .chip.up { background: var(--good-bg); color: var(--good); }
 .chip.high { background: var(--info-bg); color: var(--info); }
-.chip.warn, .chip.medium, .chip.waking, .chip.rolled_back, .chip.not_approved { background: var(--warn-bg); color: var(--warn); }
+.chip.warn, .chip.medium, .chip.waking, .chip.rolled_back, .chip.not_approved, .chip.refused { background: var(--warn-bg); color: var(--warn); }
 .chip.bad, .chip.low, .chip.down, .chip.failed, .chip.rollback_failed { background: var(--bad-bg); color: var(--bad); }
 .chip.neutral, .chip.demo, .chip.nodata { background: var(--neutral-bg); color: var(--muted); }
 

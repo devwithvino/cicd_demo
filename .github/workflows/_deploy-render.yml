@@ -8,7 +8,8 @@
 #
 # Service IDs and URLs are GitHub environment variables. The Render API key is
 # a GitHub environment secret, so the production key is only released to this
-# job after the production environment's approval rule passes.
+# job after the production environment's approval rule passes. Callers pass no
+# secrets at all: the job reads them from its environment.
 name: _deploy-render
 
 on:
@@ -81,6 +82,7 @@ jobs:
       contents: read
       packages: write
       issues: write
+      attestations: read
     outputs:
       result: ${{ steps.result.outputs.result }}
       deploy_seconds: ${{ steps.deploy.outputs.seconds }}
@@ -102,6 +104,41 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: scripts
+
+      # Refuse anything this pipeline did not build. Each digest needs a
+      # keyless cosign signature whose identity is this repository's build
+      # workflow on main, plus a valid SLSA provenance attestation.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify signatures and provenance
+        id: verify-signatures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY: ${{ inputs.registry }}
+          DIGESTS: ${{ inputs.digests }}
+          REPO: ${{ github.repository }}
+        run: |
+          identity="^https://github\.com/${REPO}/\.github/workflows/_build\.yml@refs/heads/main$"
+          {
+            echo "### Supply chain verification"
+            echo ""
+            echo "| Service | Signature | Provenance |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
+            ref="${REGISTRY}-${svc}@$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')"
+            sig=verified; prov=verified
+            cosign verify "${ref}" --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "${identity}" > /dev/null || { sig=MISSING; status=1; }
+            gh attestation verify "oci://${ref}" --repo "${REPO}" > /dev/null || { prov=MISSING; status=1; }
+            echo "${svc}: signature ${sig}, provenance ${prov}"
+            echo "| ${svc} | ${sig} | ${prov} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "${status}" -ne 0 ]; then
+            echo "::error title=Deploy refused::An image is not signed by this pipeline's build on main. Nothing was deployed."
+            exit 1
+          fi
 
       - name: Deploy digests to Render
         id: deploy
@@ -180,8 +217,12 @@ jobs:
           DEPLOY: ${{ steps.deploy.outcome }}
           ROLLBACK: ${{ steps.rollback.outcome }}
           VERIFY: ${{ steps.verify.outcome }}
+          SIGNATURES: ${{ steps.verify-signatures.outcome }}
         run: |
-          if [ "${DEPLOY}" = "success" ] && [ "${SMOKE}" = "success" ]; then
+          if [ "${SIGNATURES}" = "failure" ]; then
+            # Nothing was deployed, so this is a refusal, not a change failure.
+            result=refused
+          elif [ "${DEPLOY}" = "success" ] && [ "${SMOKE}" = "success" ]; then
             result=success
           elif [ "${ROLLBACK}" = "success" ] && [ "${VERIFY}" = "success" ]; then
             result=rolled_back
@@ -192,6 +233,7 @@ jobs:
           fi
           failed=""
           if [ -f smoke.json ]; then failed=$(jq -r '.failed | join(", ")' smoke.json); fi
+          [ "${result}" = "refused" ] && failed="signature or provenance verification"
           [ -z "${failed}" ] && [ "${DEPLOY}" != "success" ] && failed="deploy did not go live"
           restore=""
           if [ -n "${T_RESTORED:-}" ]; then restore=$(( T_RESTORED - T_FAILURE_DETECTED )); fi

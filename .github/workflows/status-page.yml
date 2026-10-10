@@ -5,6 +5,9 @@
 name: status-page
 
 on:
+  # zizmor: ignore[dangerous-triggers] The triggering workflows only run on
+  # main or by manual dispatch, never for pull requests, and the build job
+  # below double checks that. Artifacts are parsed as JSON data, never run.
   workflow_run:
     workflows: [deliver, demo-failure, rollback, deploy-manual]
     types: [completed]
@@ -27,6 +30,11 @@ concurrency:
 jobs:
   build:
     name: Generate metrics
+    # Only act on runs from this repository that were not pull requests.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
     permissions:
       contents: read

@@ -23,7 +23,11 @@ LABEL org.opencontainers.image.title="shipyard-worker" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.created="${BUILD_TIME}"
-RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+# The app runs from its own virtualenv, so the base image's pip (and the
+# libraries it vendors) is removed to shrink the attack surface.
+RUN python -m pip uninstall --yes --quiet pip \
+    && rm -rf /usr/local/lib/python3.13/ensurepip \
+    && useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 COPY --from=build --chown=app:app /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
