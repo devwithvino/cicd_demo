@@ -8,6 +8,11 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      since:
+        description: Optional start time to backfill from (UTC, for example 2026-10-10T08:00:00)
+        required: false
+        default: ""
   pull_request:
     paths:
       - "scripts/sentry_check.py"
@@ -54,12 +59,17 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           SENTRY_ORG_URL: https://${{ vars.SENTRY_ORG }}.sentry.io
+          SINCE_INPUT: ${{ inputs.since }}
         run: |
-          # Start where the previous successful run started, so nothing is
-          # missed or posted twice. Fall back to the last 35 minutes.
-          since=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/sentry-slack.yml/runs?status=success&per_page=1" \
-            --jq '.workflow_runs[0].run_started_at // empty' | sed 's/Z$//')
-          [ -n "${since}" ] || since=$(date -u -d '35 minutes ago' +%Y-%m-%dT%H:%M:%S)
+          # Start where the previous successful poll started, so nothing is
+          # missed or posted twice. Pull request self tests are not polls.
+          # A manual run can backfill from a chosen time instead.
+          since="${SINCE_INPUT}"
+          if [ -z "${since}" ]; then
+            since=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/sentry-slack.yml/runs?status=success&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "schedule" or .event == "workflow_dispatch")][0].run_started_at // empty' | sed 's/Z$//')
+          fi
+          if [ -z "${since}" ]; then since=$(date -u -d '35 minutes ago' +%Y-%m-%dT%H:%M:%S); fi
           python3 scripts/sentry_check.py digest --since "${since}" --out digest.json
           count=$(jq .count digest.json)
           echo "count=${count}" >> "$GITHUB_OUTPUT"
