@@ -1,0 +1,52 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Default deny for every Shipyard pod, then only the traffic each service needs:
+  web     <- anyone (it is the public entry point)
+  api     <- web, helm tests
+  worker  <- api, helm tests
+  kv      <- api, worker
+*/ -}}
+{{- $root := . -}}
+{{- $rules := list
+  (dict "name" "web" "from" (list))
+  (dict "name" "api" "from" (list "web" "smoke-test"))
+  (dict "name" "worker" "from" (list "api" "smoke-test"))
+  (dict "name" "kv" "from" (list "api" "worker"))
+-}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+  labels:
+    {{- include "shipyard.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+{{- range $rule := $rules }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $root.Release.Name }}-allow-{{ $rule.name }}
+  labels:
+    {{- include "shipyard.labels" $root | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "shipyard.selector" (dict "root" $root "name" $rule.name) | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    {{- if not $rule.from }}
+    - {}
+    {{- else }}
+    - from:
+        {{- range $source := $rule.from }}
+        - podSelector:
+            matchLabels:
+              {{- include "shipyard.selector" (dict "root" $root "name" $source) | nindent 14 }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

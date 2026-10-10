@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-smoke-test
+  labels:
+    {{- include "shipyard.labels" . | nindent 4 }}
+    app.kubernetes.io/name: smoke-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsUser: 100
+    runAsNonRoot: true
+  containers:
+    - name: smoke-test
+      image: curlimages/curl:8.11.1
+      securityContext:
+        {{- include "shipyard.containerSecurity" . | nindent 8 }}
+      env:
+        - { name: WEB, value: "http://{{ .Release.Name }}-web:8082" }
+        - { name: API, value: "http://{{ .Release.Name }}-api:8080" }
+        - { name: WORKER, value: "http://{{ .Release.Name }}-worker:8081" }
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -e
+          for url in "$WEB" "$API" "$WORKER"; do
+            curl -fsS "$url/healthz" > /dev/null && echo "healthy: $url"
+          done
+          curl -fsS "$WEB/api/status" | grep -q '"name":"worker","healthy":true' && echo "wiring: web to api to worker ok"
+          id=$(curl -fsS -X POST "$WEB/api/jobs" -H 'Content-Type: application/json' \
+            -d '{"payload":"helm test"}' | sed -n 's/.*"id":"\([0-9a-f]*\)".*/\1/p')
+          echo "submitted job $id"
+          for i in $(seq 1 30); do
+            if curl -fsS "$WEB/api/jobs/$id" | grep -q '"status":"done"'; then
+              echo "job completed by the worker"; exit 0
+            fi
+            sleep 1
+          done
+          echo "job did not complete"; exit 1

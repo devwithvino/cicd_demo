@@ -1,0 +1,9 @@
+apiVersion: v2
+name: shipyard
+description: Shipyard reference app (api, worker, web and Key Value) for any Kubernetes cluster
+type: application
+version: 0.1.0
+appVersion: "0.5.0"
+home: https://github.com/devwithvino/cicd_demo
+sources:
+  - https://github.com/devwithvino/cicd_demo

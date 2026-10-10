@@ -4,6 +4,11 @@
 #   SHIPYARD_TAG=1.4.0 docker compose up run released images from GHCR instead
 #
 # Dashboard: http://localhost:8080
+#
+# Observability (Prometheus and a ready made Grafana dashboard):
+#   docker compose --profile observability up --build
+#   Grafana: http://localhost:3000   Prometheus: http://localhost:9090
+#
 # Build metadata comes from these optional variables:
 #   GIT_SHA=$(git rev-parse HEAD) VERSION=0.1.0 docker compose up --build
 
@@ -76,3 +81,27 @@ services:
       retries: 5
     depends_on:
       - api
+
+  # Observability profile: only started with --profile observability.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=1d"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [api, worker, web]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: ["observability"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/shipyard.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]

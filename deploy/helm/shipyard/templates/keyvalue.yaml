@@ -1,0 +1,66 @@
+{{- if .Values.keyValue.enabled }}
+{{- $ctx := dict "root" . "name" "kv" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shipyard.fullname" $ctx }}
+  labels:
+    {{- include "shipyard.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kv
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "shipyard.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shipyard.labels" . | nindent 8 }}
+        app.kubernetes.io/name: kv
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+      containers:
+        - name: valkey
+          image: {{ .Values.keyValue.image }}
+          # Queue data is disposable, matching the free Key Value used on Render.
+          args: ["valkey-server", "--save", "", "--appendonly", "no"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec: { command: ["valkey-cli", "ping"] }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: redis }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            {{- include "shipyard.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shipyard.fullname" $ctx }}
+  labels:
+    {{- include "shipyard.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kv
+spec:
+  selector:
+    {{- include "shipyard.selector" $ctx | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+{{- end }}

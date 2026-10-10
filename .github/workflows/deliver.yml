@@ -1,8 +1,8 @@
 # The main delivery path: every merge to main is versioned, built once and
 # promoted by digest through staging and, after a human approval, production.
 #
-#   version -> build once -> staging (deploy + smoke) -> approval -> production
-#   (same digests + smoke) -> release (retag, GitHub Release) -> report + notify
+#   version -> build once -> staging (deploy + smoke) and Kubernetes (kind + helm)
+#   -> approval -> production (same digests + smoke) -> release -> report + notify
 name: deliver
 
 on:
@@ -77,11 +77,27 @@ jobs:
     secrets:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
 
+  # Deploy anywhere: the same digests on a throwaway Kubernetes cluster, in
+  # parallel with staging. Production needs both to pass.
+  kubernetes:
+    name: Kubernetes
+    needs: [version, build]
+    permissions:
+      contents: read
+      attestations: read
+    uses: ./.github/workflows/_kind-e2e.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      registry: ${{ needs.build.outputs.registry }}
+      git_sha: ${{ github.sha }}
+      version: ${{ needs.version.outputs.version }}
+
   # The production environment requires a reviewer, so this job waits for a
-  # human approval. It deploys the identical digests that passed staging.
+  # human approval. It deploys the identical digests that passed staging and
+  # Kubernetes.
   production:
     name: Production
-    needs: [version, build, staging]
+    needs: [version, build, staging, kubernetes]
     permissions:
       contents: read
       packages: write
@@ -187,7 +203,7 @@ jobs:
   report:
     name: Report
     if: always()
-    needs: [version, build, staging, production, release]
+    needs: [version, build, staging, kubernetes, production, release]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -205,7 +221,7 @@ jobs:
           COMMIT_TIME: ${{ github.event.head_commit.timestamp }}
         run: |
           status=success
-          for job in build staging production release; do
+          for job in build staging kubernetes production release; do
             result=$(echo "${RESULTS}" | jq -r --arg j "${job}" '.[$j].result')
             if [ "${result}" != "success" ]; then status=failure; failed="${failed:-${job}}"; fi
           done

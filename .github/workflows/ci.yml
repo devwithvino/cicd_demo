@@ -166,6 +166,25 @@ jobs:
           dockerfile: services/${{ matrix.service }}/Dockerfile
           failure-threshold: warning
 
+  helm:
+    name: helm chart (lint, kubeconform)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint the chart
+        run: helm lint deploy/helm/shipyard --strict
+      - name: Validate rendered manifests against Kubernetes schemas
+        run: |
+          helm template shipyard deploy/helm/shipyard \
+            --set images.api.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+            | docker run --rm -i \
+              ghcr.io/yannh/kubeconform:v0.7.0@sha256:85dbef6b4b312b99133decc9c6fc9495e9fc5f92293d4ff3b7e1b30f5611823c \
+              -strict -summary -kubernetes-version 1.33.0 -
+
   workflows:
     name: workflow lint (actionlint, zizmor)
     runs-on: ubuntu-24.04
@@ -189,7 +208,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [api, worker, web, prose, dockerfiles, workflows]
+    needs: [api, worker, web, prose, dockerfiles, helm, workflows]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
