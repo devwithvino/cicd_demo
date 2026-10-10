@@ -42,7 +42,7 @@ func (f *fakeStore) Recent(context.Context) ([]jobs.Job, error) { return f.creat
 
 func (f *fakeStore) QueueDepth(context.Context) (int64, error) { return int64(len(f.created)), nil }
 
-func newTestServer(t *testing.T, store JobStore, workerURL string) http.Handler {
+func newTestServer(t testing.TB, store JobStore, workerURL string) http.Handler {
 	t.Helper()
 	cfg := config.Config{Environment: "test", WorkerURL: workerURL, RepoURL: "https://example.com/repo"}
 	return New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
