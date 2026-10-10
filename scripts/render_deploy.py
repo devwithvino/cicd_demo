@@ -8,6 +8,8 @@ Commands:
             to all services in parallel and wait until they are live.
   rollback  Redeploy the images recorded by a previous deploy.
   current   Print the image each service is running.
+  suspend   Suspend services (and optionally the Key Value instance).
+  resume    Resume them. Suspended services keep their config and data.
 
 Examples:
   render_deploy.py deploy --services api=srv-a,worker=srv-b,web=srv-c \\
@@ -175,6 +177,48 @@ def cmd_current(args: argparse.Namespace) -> int:
     return 0
 
 
+def set_suspended(args: argparse.Namespace, suspend: bool) -> int:
+    """Suspend or resume services, and the Key Value instance when given.
+
+    Order matters: on the way down services stop before their data store, on
+    the way up the data store starts before the services.
+    """
+    action = "suspend" if suspend else "resume"
+    services = parse_services(args.services) if args.services else {}
+    kv = [("keyvalue", f"/key-value/{args.kv}")] if args.kv else []
+    targets = [(name, f"/services/{sid}") for name, sid in services.items()]
+    ordered = targets + kv if suspend else kv + targets
+    for name, path in ordered:
+        try:
+            request("POST", f"{path}/{action}")
+            log(f"{name}: {action} requested")
+        except RenderError as err:
+            # Suspending something already suspended (or resuming something
+            # running) is not an error for this command.
+            if "HTTP 409" in str(err) or "already" in str(err).lower():
+                log(f"{name}: already {'suspended' if suspend else 'running'}")
+            else:
+                raise
+    for name, sid in services.items():
+        deadline = time.time() + 120
+        state = ""
+        while time.time() < deadline:
+            state = request("GET", f"/services/{sid}").get("suspended", "")
+            if (state == "suspended") == suspend:
+                break
+            time.sleep(5)
+        log(f"{name}: {state}")
+    return 0
+
+
+def cmd_suspend(args: argparse.Namespace) -> int:
+    return set_suspended(args, suspend=True)
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    return set_suspended(args, suspend=False)
+
+
 def write_state(path: str, state: dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2)
@@ -207,8 +251,19 @@ def main() -> int:
     current = sub.add_parser("current")
     current.add_argument("--services", required=True)
 
+    for name in ("suspend", "resume"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("--services", default="", help="name=serviceId pairs, comma separated")
+        cmd.add_argument("--kv", default="", help="Key Value instance ID (red-...)")
+
     args = parser.parse_args()
-    handlers = {"deploy": cmd_deploy, "rollback": cmd_rollback, "current": cmd_current}
+    handlers = {
+        "deploy": cmd_deploy,
+        "rollback": cmd_rollback,
+        "current": cmd_current,
+        "suspend": cmd_suspend,
+        "resume": cmd_resume,
+    }
     try:
         return handlers[args.command](args)
     except RenderError as err:

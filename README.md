@@ -25,6 +25,8 @@ Shipyard is a reference delivery pipeline. A small microservices app travels fro
 | Releases (versioned images and digests) | https://github.com/devwithvino/cicd_demo/releases |
 | Pipeline runs | https://github.com/devwithvino/cicd_demo/actions |
 
+> The hosted platform can be paused and resumed with one click. See the [operations guide](docs/operations.md).
+>
 > The demo runs on free instances that sleep after 15 minutes without traffic. The first visit can take about a minute while the services wake up. The dashboard says so and refreshes on its own.
 
 ## In 60 seconds
@@ -447,6 +449,7 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 | [`nightly.yml`](.github/workflows/nightly.yml) | Nightly, manual run | Re scan running images, synthetic production check, link check |
 | [`scorecard.yml`](.github/workflows/scorecard.yml) | Pushes to `main`, weekly | OpenSSF Scorecard |
 | [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Dependabot pull requests | Queues patch and minor updates for auto merge |
+| [`platform.yml`](.github/workflows/platform.yml) | Manual run | Brings staging, production or both down (suspend) or up (resume and smoke test), pausing scheduled checks while production is off |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Slack notification: colored status, summary, version, commit, timings and link buttons, including approval requests |
 | [`_kind-e2e.yml`](.github/workflows/_kind-e2e.yml) | Called by deliver and pr-preview | Same digests on a Kind cluster: verify, helm install, helm test, smoke test, k6 performance gate |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
@@ -491,6 +494,10 @@ Pipeline practices applied throughout:
 Free tiers come with limits: instances sleep after 15 minutes idle, 750 instance hours a month are shared by all services, one free Key Value instance, 5 GB of bandwidth a month, and no free background worker type (so the worker runs as a free web service). Each limit and how the design handles it is documented in [docs/free-tier-limits.md](docs/free-tier-limits.md), together with the results of the platform spike that proved the approach before any code was written.
 
 ---
+
+## Operations
+
+The [operations guide](docs/operations.md) covers pausing and resuming the hosted platform with the `platform` workflow, running locally, permanent teardown and a full rebuild from scratch.
 
 ## Run it locally
 
@@ -565,7 +572,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 ├── .github/workflows/     ci, deliver, demo-failure, rollback, deploy-manual and the reusable _ workflows
 ├── status-site/           Static status page published to GitHub Pages
 ├── docs/
-│   └── free-tier-limits.md
+│   ├── free-tier-limits.md
+│   └── operations.md      Bring the platform down and up, teardown and rebuild
 ├── render.yaml            Render Blueprint: 6 free web services and 1 Key Value
 └── docker-compose.yml     Local stack using the same images
 ```
