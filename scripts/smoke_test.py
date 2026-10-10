@@ -78,6 +78,7 @@ def main() -> int:
     parser.add_argument("--job-timeout", type=int, default=150)
     parser.add_argument("--title", default="Smoke test")
     parser.add_argument("--summary", default="", help="file to append the Markdown report to")
+    parser.add_argument("--json-out", default="", help="file to write the results to as JSON")
     args = parser.parse_args()
 
     services = {"web": args.web.rstrip("/"), "api": args.api.rstrip("/"), "worker": args.worker.rstrip("/")}
@@ -120,6 +121,14 @@ def main() -> int:
                        f"{final.get('status', 'no answer')} in {round(time.time() - started)}s by {final.get('processedBy', 'nobody')}")
 
     markdown = report.markdown(args.title)
+    if args.json_out:
+        results = {
+            "ok": report.ok,
+            "checks": [{"check": c, "ok": ok, "detail": d} for c, ok, d in report.rows],
+            "failed": [c for c, ok, _ in report.rows if not ok],
+        }
+        with open(args.json_out, "w", encoding="utf-8") as handle:
+            json.dump(results, handle, indent=2)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as handle:
             handle.write(markdown + "\n")

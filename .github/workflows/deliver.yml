@@ -57,6 +57,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      issues: write
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment: staging
@@ -74,6 +75,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      issues: write
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment: production
@@ -157,6 +159,16 @@ jobs:
             if [ "${result}" != "success" ]; then status=failure; failed="${failed:-${job}}"; fi
           done
           if [ "$(echo "${RESULTS}" | jq -r '.production.result')" = "cancelled" ]; then status=cancelled; fi
+          rolled_env=""
+          for env in staging production; do
+            if [ "$(echo "${RESULTS}" | jq -r --arg e "${env}" '.[$e].outputs.result // empty')" = "rolled_back" ]; then
+              rolled_env="${env}"
+              restore=$(echo "${RESULTS}" | jq -r --arg e "${env}" '.[$e].outputs.restore_seconds')
+              checks=$(echo "${RESULTS}" | jq -r --arg e "${env}" '.[$e].outputs.failed_checks')
+              incident=$(echo "${RESULTS}" | jq -r --arg e "${env}" '.[$e].outputs.incident_url')
+            fi
+          done
+          [ -n "${rolled_env}" ] && status=rollback
 
           jobs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" --jq '.jobs')
           start=$(date -d "${COMMIT_TIME:-$(echo "${jobs}" | jq -r 'map(.started_at) | min')}" +%s)
@@ -173,6 +185,8 @@ jobs:
 
           if [ "${status}" = "success" ]; then
             summary="Version ${VERSION} is live in production. Built once, verified in staging, approved, and promoted by digest with no manual steps."
+          elif [ "${status}" = "rollback" ]; then
+            summary="Version ${VERSION} failed verification in ${rolled_env} (${checks}) and was rolled back automatically. Service was restored in ${restore}s. Incident: ${incident}"
           elif [ "${status}" = "cancelled" ]; then
             summary="Version ${VERSION} was not promoted to production. The approval was rejected or the run was cancelled."
           else

@@ -1,5 +1,10 @@
 # Reusable deploy: promote exact image digests to one Render environment,
-# then prove the release works with a smoke test.
+# prove the release works with a smoke test, and roll back automatically if
+# it does not.
+#
+#   record what is live -> deploy digests -> smoke test
+#     pass: move the environment tag
+#     fail: redeploy the recorded images -> verify -> open an incident issue
 #
 # Service IDs and URLs are GitHub environment variables. The Render API key is
 # a GitHub environment secret, so the production key is only released to this
@@ -22,17 +27,37 @@ on:
         required: true
         type: string
       version:
-        description: Release version, used in the summary
+        description: Release version, used in summaries and incidents
         required: true
         type: string
       git_sha:
         description: Commit every service must report after the deploy
         required: true
         type: string
+      rollback_on_failure:
+        description: Redeploy the previous images when the deploy or smoke test fails
+        required: false
+        type: boolean
+        default: true
     outputs:
+      result:
+        description: success, rolled_back, rollback_failed or failed
+        value: ${{ jobs.deploy.outputs.result }}
       deploy_seconds:
         description: How long the deploy took
         value: ${{ jobs.deploy.outputs.deploy_seconds }}
+      restore_seconds:
+        description: Time from detecting the failure to a verified rollback
+        value: ${{ jobs.deploy.outputs.restore_seconds }}
+      failed_checks:
+        description: Smoke test checks that failed, comma separated
+        value: ${{ jobs.deploy.outputs.failed_checks }}
+      restored_version:
+        description: Version running after a rollback
+        value: ${{ jobs.deploy.outputs.restored_version }}
+      incident_url:
+        description: Incident issue opened after a rollback
+        value: ${{ jobs.deploy.outputs.incident_url }}
       web_url:
         description: Public URL of the environment
         value: ${{ jobs.deploy.outputs.web_url }}
@@ -43,18 +68,35 @@ jobs:
   deploy:
     name: deploy to ${{ inputs.environment }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
+    # Only one deploy touches an environment at a time, whichever workflow
+    # started it. Deploys are queued, never cancelled midway.
+    concurrency:
+      group: render-${{ inputs.environment }}
+      cancel-in-progress: false
     environment:
       name: ${{ inputs.environment }}
       url: ${{ vars.WEB_URL }}
     permissions:
       contents: read
       packages: write
+      issues: write
     outputs:
+      result: ${{ steps.result.outputs.result }}
       deploy_seconds: ${{ steps.deploy.outputs.seconds }}
+      restore_seconds: ${{ steps.result.outputs.restore_seconds }}
+      failed_checks: ${{ steps.result.outputs.failed_checks }}
+      restored_version: ${{ steps.verify.outputs.version }}
+      incident_url: ${{ steps.incident.outputs.url }}
       web_url: ${{ vars.WEB_URL }}
     env:
       SERVICES: api=${{ vars.RENDER_API_SERVICE_ID }},worker=${{ vars.RENDER_WORKER_SERVICE_ID }},web=${{ vars.RENDER_WEB_SERVICE_ID }}
+      WEB_URL: ${{ vars.WEB_URL }}
+      API_URL: ${{ vars.API_URL }}
+      WORKER_URL: ${{ vars.WORKER_URL }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      VERSION: ${{ inputs.version }}
+      GIT_SHA: ${{ inputs.git_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,57 +110,173 @@ jobs:
           REGISTRY: ${{ inputs.registry }}
           DIGESTS: ${{ inputs.digests }}
         run: |
+          echo "T_DEPLOY_START=$(date -u +%s)" >> "$GITHUB_ENV"
+          set +e
           python3 scripts/render_deploy.py deploy \
             --services "${SERVICES}" --registry "${REGISTRY}" --digests "${DIGESTS}" --state deploy-state.json
-          echo "seconds=$(jq .seconds deploy-state.json)" >> "$GITHUB_OUTPUT"
+          rc=$?
+          echo "T_DEPLOY_DONE=$(date -u +%s)" >> "$GITHUB_ENV"
+          [ -f deploy-state.json ] && echo "seconds=$(jq .seconds deploy-state.json)" >> "$GITHUB_OUTPUT"
+          exit "${rc}"
 
       - name: Smoke test
         id: smoke
+        run: |
+          set +e
+          python3 scripts/smoke_test.py \
+            --web "${WEB_URL}" --api "${API_URL}" --worker "${WORKER_URL}" \
+            --expect-sha "${GIT_SHA}" --title "Smoke test: ${ENVIRONMENT}" \
+            --summary "$GITHUB_STEP_SUMMARY" --json-out smoke.json
+          rc=$?
+          echo "T_SMOKE_DONE=$(date -u +%s)" >> "$GITHUB_ENV"
+          exit "${rc}"
+
+      # Failure path: put back exactly what was running before.
+      - name: Roll back to the previous images
+        id: rollback
+        if: failure() && inputs.rollback_on_failure && hashFiles('deploy-state.json') != ''
         env:
-          WEB_URL: ${{ vars.WEB_URL }}
-          API_URL: ${{ vars.API_URL }}
-          WORKER_URL: ${{ vars.WORKER_URL }}
-          GIT_SHA: ${{ inputs.git_sha }}
-          ENVIRONMENT: ${{ inputs.environment }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          echo "T_FAILURE_DETECTED=${T_SMOKE_DONE:-${T_DEPLOY_DONE}}" >> "$GITHUB_ENV"
+          echo "::warning title=Automatic rollback::${VERSION} failed verification in ${ENVIRONMENT}. Restoring the previous images."
+          python3 scripts/render_deploy.py rollback --state deploy-state.json
+          echo "T_ROLLBACK_LIVE=$(date -u +%s)" >> "$GITHUB_ENV"
+
+      - name: Verify the restored release
+        id: verify
+        if: failure() && steps.rollback.outcome == 'success'
         run: |
           python3 scripts/smoke_test.py \
             --web "${WEB_URL}" --api "${API_URL}" --worker "${WORKER_URL}" \
-            --expect-sha "${GIT_SHA}" --title "Smoke test: ${ENVIRONMENT}" --summary "$GITHUB_STEP_SUMMARY"
+            --title "Smoke test after rollback: ${ENVIRONMENT}" \
+            --summary "$GITHUB_STEP_SUMMARY" --json-out verify.json
+          echo "T_RESTORED=$(date -u +%s)" >> "$GITHUB_ENV"
+          curl -fsS "${WEB_URL}/version" | jq -r '"version=\(.version)", "commit=\(.commit)"' >> "$GITHUB_OUTPUT"
 
+      # Success path: the environment tag follows what passed here, so a
+      # blueprint sync can only ever redeploy a verified image.
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The environment tag always points at what passed in this environment.
-      # render.yaml references these tags, so a blueprint sync can only ever
-      # redeploy an approved, verified image. Retagging never rebuilds.
       - name: Move environment tag to the verified digests
         env:
           REGISTRY: ${{ inputs.registry }}
           DIGESTS: ${{ inputs.digests }}
-          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
             digest=$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')
             docker buildx imagetools create -t "${REGISTRY}-${svc}:${ENVIRONMENT}" "${REGISTRY}-${svc}@${digest}"
           done
 
+      - name: Work out the result
+        id: result
+        if: always()
+        env:
+          SMOKE: ${{ steps.smoke.outcome }}
+          DEPLOY: ${{ steps.deploy.outcome }}
+          ROLLBACK: ${{ steps.rollback.outcome }}
+          VERIFY: ${{ steps.verify.outcome }}
+        run: |
+          if [ "${DEPLOY}" = "success" ] && [ "${SMOKE}" = "success" ]; then
+            result=success
+          elif [ "${ROLLBACK}" = "success" ] && [ "${VERIFY}" = "success" ]; then
+            result=rolled_back
+          elif [ "${ROLLBACK}" = "skipped" ]; then
+            result=failed
+          else
+            result=rollback_failed
+          fi
+          failed=""
+          if [ -f smoke.json ]; then failed=$(jq -r '.failed | join(", ")' smoke.json); fi
+          [ -z "${failed}" ] && [ "${DEPLOY}" != "success" ] && failed="deploy did not go live"
+          restore=""
+          if [ -n "${T_RESTORED:-}" ]; then restore=$(( T_RESTORED - T_FAILURE_DETECTED )); fi
+          {
+            echo "result=${result}"
+            echo "failed_checks=${failed}"
+            echo "restore_seconds=${restore}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Result: ${result}"
+
+      - name: Open an incident issue
+        id: incident
+        if: always() && steps.rollback.outcome != 'skipped' && steps.rollback.outcome != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULT: ${{ steps.result.outputs.result }}
+          FAILED: ${{ steps.result.outputs.failed_checks }}
+          RESTORE: ${{ steps.result.outputs.restore_seconds }}
+          RESTORED_VERSION: ${{ steps.verify.outputs.version }}
+          RESTORED_COMMIT: ${{ steps.verify.outputs.commit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          at() { [ -n "${1:-}" ] && date -u -d "@$1" +%H:%M:%S || echo "n/a"; }
+          if [ "${RESULT}" = "rolled_back" ]; then
+            headline="Service was restored automatically in ${RESTORE}s. No action is needed to recover."
+            title="Incident: ${VERSION} rolled back automatically in ${ENVIRONMENT}"
+          else
+            headline="Automatic rollback did not complete. Follow the manual rollback steps in the runbook now."
+            title="Incident: ${VERSION} failed in ${ENVIRONMENT} and rollback needs attention"
+          fi
+          cat > incident.md <<EOF
+          ## Summary
+
+          Release **${VERSION}** (commit \`${GIT_SHA:0:7}\`) failed post deploy verification in **${ENVIRONMENT}**.
+          ${headline}
+
+          | Field | Value |
+          |---|---|
+          | Environment | ${ENVIRONMENT} |
+          | Attempted release | ${VERSION} at \`${GIT_SHA:0:7}\` |
+          | Failed checks | ${FAILED:-unknown} |
+          | Restored release | ${RESTORED_VERSION:-unknown} at \`${RESTORED_COMMIT:0:7}\` |
+          | Time to restore | ${RESTORE:-n/a} seconds |
+          | Pipeline run | ${RUN_URL} |
+
+          ## Timeline (UTC)
+
+          | Time | Event |
+          |---|---|
+          | $(at "${T_DEPLOY_START:-}") | Deploy of ${VERSION} started |
+          | $(at "${T_DEPLOY_DONE:-}") | Deploy finished on Render |
+          | $(at "${T_FAILURE_DETECTED:-}") | Smoke test failed: ${FAILED:-unknown} |
+          | $(at "${T_ROLLBACK_LIVE:-}") | Previous images live again |
+          | $(at "${T_RESTORED:-}") | Restored release verified by smoke test |
+
+          ## Follow up
+
+          - [ ] Find the root cause of the failed checks
+          - [ ] Add a test that would have caught it before deploy
+          - [ ] Close this issue with a short note
+          EOF
+          gh label create incident --color B60205 --description "Automatic rollback or failed release" --force >/dev/null
+          url=$(gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file incident.md --label incident)
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Opened ${url}"
+
       - name: Deploy summary
         if: always()
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
-          VERSION: ${{ inputs.version }}
-          WEB_URL: ${{ vars.WEB_URL }}
+          RESULT: ${{ steps.result.outputs.result }}
+          RESTORE: ${{ steps.result.outputs.restore_seconds }}
+          INCIDENT: ${{ steps.incident.outputs.url }}
         run: |
           [ -f deploy-state.json ] || exit 0
           {
-            echo "### Deployed ${VERSION} to ${ENVIRONMENT} in $(jq .seconds deploy-state.json)s"
+            case "${RESULT}" in
+              success) echo "### Deployed ${VERSION} to ${ENVIRONMENT} in $(jq .seconds deploy-state.json)s" ;;
+              rolled_back) echo "### ${VERSION} was rolled back in ${ENVIRONMENT}. Service restored in ${RESTORE}s" ;;
+              *) echo "### Deploy of ${VERSION} to ${ENVIRONMENT}: ${RESULT}" ;;
+            esac
             echo ""
             echo "Live at ${WEB_URL}"
+            [ -n "${INCIDENT}" ] && echo "" && echo "Incident: ${INCIDENT}"
             echo ""
-            echo "| Service | Status | Seconds | Now running | Previously running |"
+            echo "| Service | Deploy status | Seconds | Deployed | Previously running |"
             echo "|---|---|---|---|---|"
             jq -r '.services | to_entries[] | "| \(.key) | \(.value.status) | \(.value.seconds // "") | `\(.value.newRef | split("@")[1][0:19])` | `\((.value.previousRef // "nothing") | split("/")[-1][0:40])` |"' deploy-state.json
           } >> "$GITHUB_STEP_SUMMARY"
@@ -128,6 +286,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-state-${{ inputs.environment }}
-          path: deploy-state.json
+          path: |
+            deploy-state.json
+            smoke.json
+            verify.json
           if-no-files-found: ignore
           retention-days: 90

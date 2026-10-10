@@ -1,0 +1,147 @@
+# Deliberate failure demo: ship a broken release on purpose and watch the
+# pipeline catch it and restore service on its own.
+#
+# The broken release is the current code built with BROKEN_RELEASE=true. It
+# passes every health check, so the platform happily keeps it running, but job
+# submission fails. Only the pipeline's end to end smoke test notices, rolls
+# back to the previous images, verifies them, opens an incident issue and
+# notifies the team.
+name: demo-failure
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to break on purpose (production asks for approval first)
+        type: choice
+        options: [staging, production]
+        default: staging
+
+permissions: {}
+
+# One demo at a time. The deploy job also takes the per environment lock, so
+# a demo never collides with a real deploy to the same environment.
+concurrency:
+  group: demo-failure
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Prepare broken release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          version="$(python3 scripts/next_version.py)-broken"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Rollback demo against ${TARGET}"
+            echo ""
+            echo "Building **${version}**: today's code with a deliberate defect that breaks job submission"
+            echo "while keeping every health check green. Watch the pipeline detect it and restore service."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build broken release
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      broken_release: true
+      extra_tags: broken-demo
+
+  deploy:
+    name: Deploy broken release
+    needs: [version, build]
+    permissions:
+      contents: read
+      packages: write
+      issues: write
+    uses: ./.github/workflows/_deploy-render.yml
+    with:
+      environment: ${{ inputs.target }}
+      digests: ${{ needs.build.outputs.digests }}
+      registry: ${{ needs.build.outputs.registry }}
+      version: ${{ needs.version.outputs.version }}
+      git_sha: ${{ github.sha }}
+    secrets: inherit
+
+  verify:
+    name: Verify automatic recovery
+    if: always() && needs.build.result == 'success'
+    needs: [version, build, deploy]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      summary: ${{ steps.check.outputs.summary }}
+      fields: ${{ steps.check.outputs.fields }}
+    steps:
+      - id: check
+        env:
+          RESULT: ${{ needs.deploy.outputs.result }}
+          RESTORE: ${{ needs.deploy.outputs.restore_seconds }}
+          CHECKS: ${{ needs.deploy.outputs.failed_checks }}
+          RESTORED: ${{ needs.deploy.outputs.restored_version }}
+          INCIDENT: ${{ needs.deploy.outputs.incident_url }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [ "${RESULT}" = "rolled_back" ]; then
+            status=rollback
+            summary="Rollback demo: ${VERSION} broke job submission in ${TARGET}. The smoke test caught it (${CHECKS}), the pipeline restored ${RESTORED} automatically and verified it in ${RESTORE}s. Incident: ${INCIDENT}"
+            verdict="Recovery verified"
+          else
+            status=failure
+            summary="Rollback demo did not behave as expected in ${TARGET}: deploy result was '${RESULT:-unknown}'. Check the run."
+            verdict="Recovery NOT verified"
+          fi
+          fields=$(jq -cn --arg r "${RESTORE:-n/a}s" --arg c "${CHECKS:-n/a}" \
+            '[{name: "Time to restore", value: $r, inline: true}, {name: "Caught by", value: $c, inline: true}]')
+          {
+            echo "status=${status}"
+            echo "summary=${summary}"
+            echo "fields=${fields}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### ${verdict}"
+            echo ""
+            echo "| Step | Outcome |"
+            echo "|---|---|"
+            echo "| Broken release deployed | ${VERSION} went live in ${TARGET} |"
+            echo "| Health checks | Still green, so the platform kept it running |"
+            echo "| Pipeline smoke test | Failed on: ${CHECKS:-n/a} |"
+            echo "| Automatic rollback | Restored ${RESTORED:-n/a} |"
+            echo "| Time to restore | ${RESTORE:-n/a} seconds |"
+            echo "| Incident issue | ${INCIDENT:-none} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "${status}" = "rollback" ]
+
+  notify:
+    name: Notify
+    if: always() && needs.verify.result != 'skipped'
+    needs: [version, verify]
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: ${{ needs.verify.outputs.status }}
+      title: "Rollback demo in ${{ inputs.target }}: ${{ needs.verify.outputs.status == 'rollback' && 'service restored automatically' || 'needs attention' }}"
+      summary: ${{ needs.verify.outputs.summary }}
+      version: ${{ needs.version.outputs.version }}
+      environment: ${{ inputs.target }}
+      link: ${{ inputs.target == 'production' && 'https://shipyard-web-production.onrender.com' || 'https://shipyard-web-staging.onrender.com' }}
+      fields: ${{ needs.verify.outputs.fields }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
