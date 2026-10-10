@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shipyard</title>
+    <meta name="description" content="Live view of what the delivery pipeline shipped." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/client/app.js"></script>
+  </head>
+  <body data-theme="local">
+    <header class="banner">
+      <div class="banner-inner">
+        <div class="brand">
+          <span class="logo" aria-hidden="true">&#9875;</span>
+          <div>
+            <h1>Shipyard</h1>
+            <p class="tagline">Build once. Deploy anywhere. No manual steps.</p>
+          </div>
+        </div>
+        <div class="banner-meta">
+          <span id="env-pill" class="pill env-pill">loading</span>
+          <span id="build-badge" class="pill badge-neutral" title="Do all services run the same commit?">checking build</span>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section aria-labelledby="services-title">
+        <div class="section-head">
+          <h2 id="services-title">Services</h2>
+          <span id="checked-at" class="muted">never checked</span>
+        </div>
+        <p id="wake-note" class="note" hidden>
+          Free tier instances sleep when idle. Waking them takes about a minute, and this page refreshes on its own.
+        </p>
+        <div id="services" class="grid"></div>
+      </section>
+
+      <section aria-labelledby="job-title" class="panel">
+        <h2 id="job-title">Run a job</h2>
+        <p class="muted">Send work through the API, the queue and the worker, and watch which version handles it.</p>
+        <form id="job-form" class="job-form">
+          <label for="job-payload" class="visually-hidden">Job text</label>
+          <input id="job-payload" name="payload" maxlength="500" placeholder="Type any text, for example: ship it" required />
+          <button type="submit" id="job-submit">Run job</button>
+        </form>
+        <ol id="job-steps" class="steps" hidden>
+          <li data-step="queued">Queued by API</li>
+          <li data-step="processing">Picked up by worker</li>
+          <li data-step="done">Done</li>
+        </ol>
+        <p id="job-message" class="job-message" role="status"></p>
+      </section>
+
+      <section aria-labelledby="recent-title" class="panel">
+        <h2 id="recent-title">Recent jobs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Job</th><th>Status</th><th>Submitted by</th><th>Processed by</th><th>Result</th></tr>
+            </thead>
+            <tbody id="jobs"><tr><td colspan="5" class="muted">No jobs yet.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="release-title" class="panel">
+        <h2 id="release-title">Release info</h2>
+        <p class="muted">Every release is linted, tested, scanned, signed and verified before it reaches this page.</p>
+        <ul id="release-links" class="links"></ul>
+      </section>
+    </main>
+
+    <footer class="footer muted">Shipyard reference pipeline. Refreshes every 10 seconds.</footer>
+  </body>
+</html>
