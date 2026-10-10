@@ -39,6 +39,7 @@ body[data-theme="preview"] { --theme: #7c3aed; }
 body[data-theme="local"] { --theme: #475569; }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;

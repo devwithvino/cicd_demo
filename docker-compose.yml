@@ -1,0 +1,78 @@
+# Run the whole Shipyard stack locally with the same images the pipeline ships.
+#
+#   docker compose up --build            build from source and run
+#   SHIPYARD_TAG=1.4.0 docker compose up run released images from GHCR instead
+#
+# Dashboard: http://localhost:8080
+# Build metadata comes from these optional variables:
+#   GIT_SHA=$(git rev-parse HEAD) VERSION=0.1.0 docker compose up --build
+
+name: shipyard
+
+x-build-args: &build-args
+  VERSION: ${VERSION:-local}
+  GIT_SHA: ${GIT_SHA:-local}
+  BUILD_TIME: ${BUILD_TIME:-local}
+
+x-runtime-env: &runtime-env
+  APP_ENV: local
+  KV_URL: redis://kv:6379/0
+  KEY_PREFIX: "local:"
+  REPO_URL: https://github.com/devwithvino/cicd_demo
+
+services:
+  kv:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    image: ghcr.io/devwithvino/shipyard-api:${SHIPYARD_TAG:-local}
+    build:
+      context: services/api
+      args: *build-args
+    environment:
+      <<: *runtime-env
+      WORKER_URL: http://worker:8081
+    ports: ["8090:8080"]
+    depends_on:
+      kv:
+        condition: service_healthy
+
+  worker:
+    image: ghcr.io/devwithvino/shipyard-worker:${SHIPYARD_TAG:-local}
+    build:
+      context: services/worker
+      args: *build-args
+    environment: *runtime-env
+    ports: ["8091:8081"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      kv:
+        condition: service_healthy
+
+  web:
+    image: ghcr.io/devwithvino/shipyard-web:${SHIPYARD_TAG:-local}
+    build:
+      context: services/web
+      args: *build-args
+    environment:
+      APP_ENV: local
+      API_URL: http://api:8080
+      REPO_URL: https://github.com/devwithvino/cicd_demo
+    ports: ["8080:8082"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8082/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      - api
