@@ -30,6 +30,7 @@ For a business reader, this is what the project shows:
 - **Software is built exactly once.** The same container image that passed testing is the one that runs in production. Nothing is rebuilt along the way, so what was tested is what customers get.
 - **Releases are verified, not hoped for.** After every deploy, an automated smoke test sends a real job through the live system and confirms every service runs the expected version.
 - **People stay in control.** Staging updates automatically. Production needs one click of approval from a named reviewer.
+- **Bad releases undo themselves.** If a release fails its checks after going live, the pipeline puts the previous version back on its own, confirms it works, and opens an incident report. In the recorded demo, service was restored in 28 seconds.
 - **The team is told what happened.** Every delivery posts a plain language summary to the team chat, with the time it took.
 - **It costs nothing to run.** Everything uses free tiers, and the hosting account has no payment method, so a bill is impossible.
 
@@ -45,6 +46,19 @@ Numbers from [delivery run 38020394941](https://github.com/devwithvino/cicd_demo
 | Deploy the identical images to production and smoke test | 46s |
 | Tag the release and publish it | 8s |
 | **Commit to production, excluding the approval wait** | **about 3m 40s** |
+
+And from the [deliberate failure demo](https://github.com/devwithvino/cicd_demo/actions/runs/38022224039), which shipped a broken release to staging on purpose:
+
+| Event | Time (UTC) |
+|---|---|
+| Broken release starts deploying | 03:57:01 |
+| Broken release live, health checks still green | 03:57:25 |
+| Smoke test catches the defect | 03:57:27 |
+| Previous release live again | 03:57:51 |
+| Restored release verified | 03:57:55 |
+| **Failure detected to service verified** | **28 seconds** |
+
+The pipeline wrote all of this up automatically in [incident #1](https://github.com/devwithvino/cicd_demo/issues/1).
 
 ---
 
@@ -167,7 +181,8 @@ flowchart TD
     publish --> stg[Deploy digests to staging]
     stg --> stgsmoke{Staging<br/>smoke test}
     stgsmoke -- pass --> stgtag[Move staging tag]
-    stgsmoke -- fail --> stop1([Stop. Nothing reaches production])
+    stgsmoke -- fail --> rb1[Automatic rollback<br/>verify, open incident]
+    rb1 --> stop1([Stop. Nothing reaches production])
     stgtag --> approval{{Human approval<br/>production environment}}
     approval -- approved --> prd[Deploy the same digests to production]
     approval -- rejected --> stop2([Stop. Production unchanged])
@@ -175,7 +190,8 @@ flowchart TD
     prdsmoke -- pass --> prdtag[Move production tag]
     prdtag --> release[Tag images vX.Y.Z and latest<br/>publish GitHub Release]
     release --> report[Measure pipeline time]
-    prdsmoke -- fail --> report
+    prdsmoke -- fail --> rb2[Automatic rollback<br/>verify, open incident]
+    rb2 --> report
     stop1 --> report
     report --> notify[Discord summary]
 ```
@@ -222,7 +238,39 @@ Render then health checks each new instance and only switches traffic once it is
 3. **Wiring.** The web service must reach the API, and the API must reach the worker.
 4. **End to end.** A real job is submitted through the public web URL and must be completed by the worker.
 
-The test deliberately goes beyond health checks. A release can be "healthy" and still broken, and the rollback demo coming in Phase 3 relies on exactly that.
+The test deliberately goes beyond health checks. A release can be "healthy" and still broken, and the rollback demo relies on exactly that.
+
+### Automatic rollback
+
+Every deploy records which image each service was running before it started. If the deploy or its smoke test fails, [`_deploy-render.yml`](.github/workflows/_deploy-render.yml) immediately:
+
+1. Redeploys the recorded previous images to all services in parallel.
+2. Runs the full smoke test again against the restored release.
+3. Measures the time from detecting the failure to a verified restore.
+4. Opens an [incident issue](https://github.com/devwithvino/cicd_demo/issues?q=label%3Aincident) with a summary, the failed checks and a timeline.
+5. Marks the deployment as failed, keeps the environment tag on the last good release, and stops the release from going any further.
+
+There are two layers of protection, and each covers a different kind of failure:
+
+| Layer | Catches | Example |
+|---|---|---|
+| Render health check | A release that will not start or answer | Crash on boot. Render never switches traffic, the old instance keeps serving |
+| Pipeline smoke test and rollback | A release that runs but does the wrong thing | Job submission broken while health checks stay green |
+
+### The deliberate failure demo
+
+[`demo-failure.yml`](.github/workflows/demo-failure.yml) shows the second layer working, on demand. It builds today's code with a deliberate defect (`BROKEN_RELEASE=true`) that breaks job submission but keeps every health check green, so Render is happy to run it. Then it deploys that release to staging, or to production after approval. The smoke test fails at "job accepted", the pipeline rolls back, verifies, opens an incident and posts a red then green summary to Discord.
+
+To run it: **Actions, demo-failure, Run workflow**, choose an environment. The run itself ends red, because the broken release really did fail. The "Verify automatic recovery" job is the one that must be green.
+
+### Manual deploy and one click rollback
+
+Releases stay deployable after they ship. [`deploy-manual.yml`](.github/workflows/deploy-manual.yml) and [`rollback.yml`](.github/workflows/rollback.yml) resolve a version through [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) to the exact digests released for it, then use the same deploy, smoke test and automatic rollback as the main pipeline.
+
+- `rollback` defaults to **previous**: the newest release older than what the environment runs now. It asks for a reason, which goes into the team notification.
+- `deploy-manual` takes any released version and has a **dry run** option that only prints the plan.
+- Production still requires approval for both.
+- An unknown version is refused, with the list of available releases.
 
 ### Protecting production from infrastructure syncs
 
@@ -235,14 +283,18 @@ Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If th
 | [`ci.yml`](.github/workflows/ci.yml) | Pull requests, pushes to `main` | Detects which services changed and checks only those. Go: golangci-lint and tests with the race detector. Python: ruff, mypy in strict mode, pytest with coverage. TypeScript: eslint, tsc, vitest with coverage, production build. Plus prose lint. One aggregate "CI passed" check for branch protection |
 | [`deliver.yml`](.github/workflows/deliver.yml) | Pushes to `main` (code changes), manual run | The delivery flow above |
 | [`_build.yml`](.github/workflows/_build.yml) | Called by other workflows | Reusable build once: native multi-arch matrix, push by digest, merge, tag, output a digest map |
-| [`_deploy-render.yml`](.github/workflows/_deploy-render.yml) | Called by other workflows | Reusable deploy to one environment: deploy by digest, smoke test, move the environment tag, write a summary, keep the deploy record for 90 days |
+| [`_deploy-render.yml`](.github/workflows/_deploy-render.yml) | Called by other workflows | Reusable deploy to one environment: deploy by digest, smoke test, automatic rollback with incident issue on failure, move the environment tag on success, keep the deploy record for 90 days |
+| [`demo-failure.yml`](.github/workflows/demo-failure.yml) | Manual run | Ships a deliberately broken release and verifies the automatic recovery |
+| [`rollback.yml`](.github/workflows/rollback.yml) | Manual run | One click rollback to the previous release, or a chosen one |
+| [`deploy-manual.yml`](.github/workflows/deploy-manual.yml) | Manual run | Deploy any released version to any environment, with a dry run option |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
+| [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
 
 Pipeline practices applied throughout:
 
 - **Least privilege.** Every workflow starts with `permissions: {}` and each job asks only for what it needs.
 - **Pinned actions.** Third party actions are pinned to full commit SHAs, not movable tags.
-- **Concurrency control.** CI cancels outdated runs on the same pull request. Deliveries run one at a time and are never cancelled midway.
+- **Concurrency control.** CI cancels outdated runs on the same pull request. Deliveries run one at a time. Each environment has its own deploy lock shared by every workflow, so a demo, a rollback and a delivery can never deploy to the same environment at once. Deploys are never cancelled midway.
 - **Readable summaries.** Every stage writes a Markdown summary to the run page, so anyone can see what was built, where it went and what was checked.
 
 ### Environments and secrets
@@ -325,7 +377,7 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 │   ├── render_deploy.py   Deploy, record and roll back image digests on Render
 │   ├── smoke_test.py      Post deploy verification used everywhere
 │   └── prose_lint.py      House writing style check
-├── .github/workflows/     ci, deliver and the reusable _build, _deploy-render, _notify
+├── .github/workflows/     ci, deliver, demo-failure, rollback, deploy-manual and the reusable _ workflows
 ├── docs/
 │   └── free-tier-limits.md
 ├── render.yaml            Render Blueprint: 6 free web services and 1 Key Value
@@ -341,8 +393,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 0 | Platform spike: deploy by digest, previews, free tier limits | Done |
 | 1 | Application services, tests, Dockerfiles, local stack | Done |
 | 2 | CI, build once, staging, approval, production, release, Discord | Done |
-| 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Next |
-| 4 | Status page with live health and DORA metrics on GitHub Pages | Planned |
+| 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Done |
+| 4 | Status page with live health and DORA metrics on GitHub Pages | Next |
 | 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance | Planned |
 | 6 | Pull request preview environments on Render | Planned |
 | 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Planned |
