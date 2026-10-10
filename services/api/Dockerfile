@@ -2,7 +2,7 @@
 
 # Build stage runs on the builder's native platform and cross compiles,
 # so multi-arch builds never need slow emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:c95332c2af86b6d89b91bd0500f4b9529ccbd090a0d1855c6d1ceaa142ae8615 AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/api ./cmd/api
 
 # Runtime stage: no shell, no package manager, non-root user.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 ARG VERSION=dev
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
