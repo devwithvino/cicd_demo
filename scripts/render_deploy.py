@@ -177,6 +177,13 @@ def cmd_current(args: argparse.Namespace) -> int:
     return 0
 
 
+def is_suspended(path: str) -> bool:
+    """True when the service or Key Value instance at path is suspended."""
+    resource = request("GET", path) or {}
+    # Services report suspended or not_suspended; Key Value reports a status.
+    return bool(resource.get("suspended") == "suspended" or resource.get("status") == "suspended")
+
+
 def set_suspended(args: argparse.Namespace, suspend: bool) -> int:
     """Suspend or resume services, and the Key Value instance when given.
 
@@ -189,16 +196,13 @@ def set_suspended(args: argparse.Namespace, suspend: bool) -> int:
     targets = [(name, f"/services/{sid}") for name, sid in services.items()]
     ordered = targets + kv if suspend else kv + targets
     for name, path in ordered:
-        try:
-            request("POST", f"{path}/{action}")
-            log(f"{name}: {action} requested")
-        except RenderError as err:
-            # Suspending something already suspended (or resuming something
-            # running) is not an error for this command.
-            if "HTTP 409" in str(err) or "already" in str(err).lower():
-                log(f"{name}: already {'suspended' if suspend else 'running'}")
-            else:
-                raise
+        # Idempotent: skip anything already in the requested state. Render
+        # rejects resuming a running service and suspending a suspended one.
+        if is_suspended(path) == suspend:
+            log(f"{name}: already {'suspended' if suspend else 'running'}")
+            continue
+        request("POST", f"{path}/{action}")
+        log(f"{name}: {action} requested")
     for name, sid in services.items():
         deadline = time.time() + 120
         state = ""
