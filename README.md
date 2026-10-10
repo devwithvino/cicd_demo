@@ -6,6 +6,8 @@
 [![deliver](https://github.com/devwithvino/cicd_demo/actions/workflows/deliver.yml/badge.svg)](https://github.com/devwithvino/cicd_demo/actions/workflows/deliver.yml)
 [![status page](https://github.com/devwithvino/cicd_demo/actions/workflows/status-page.yml/badge.svg)](https://devwithvino.github.io/cicd_demo/)
 [![release](https://img.shields.io/github/v/release/devwithvino/cicd_demo?label=release)](https://github.com/devwithvino/cicd_demo/releases)
+[![security](https://github.com/devwithvino/cicd_demo/actions/workflows/security.yml/badge.svg)](https://github.com/devwithvino/cicd_demo/actions/workflows/security.yml)
+[![signed](https://img.shields.io/badge/images-signed%20%2B%20SLSA%20provenance-blueviolet)](#supply-chain-security)
 [![images](https://img.shields.io/badge/images-amd64%20%7C%20arm64-blue)](https://github.com/devwithvino?tab=packages&repo_name=cicd_demo)
 [![cost](https://img.shields.io/badge/monthly%20cost-%240-brightgreen)](docs/free-tier-limits.md)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -29,6 +31,7 @@ Shipyard is a reference delivery pipeline. A small microservices app travels fro
 For a business reader, this is what the project shows:
 
 - **Every change is checked automatically.** Code is linted, type checked and tested in three languages before it can ship.
+- **Security is a gate, not an afterthought.** Every change is scanned for leaked secrets, code vulnerabilities and risky dependencies. Every container image is scanned, comes with a full parts list (SBOM), and is cryptographically signed. Production refuses anything the pipeline did not sign.
 - **Software is built exactly once.** The same container image that passed testing is the one that runs in production. Nothing is rebuilt along the way, so what was tested is what customers get.
 - **Releases are verified, not hoped for.** After every deploy, an automated smoke test sends a real job through the live system and confirms every service runs the expected version.
 - **People stay in control.** Staging updates automatically. Production needs one click of approval from a named reviewer.
@@ -275,6 +278,44 @@ Releases stay deployable after they ship. [`deploy-manual.yml`](.github/workflow
 - Production still requires approval for both.
 - An unknown version is refused, with the list of available releases.
 
+### Supply chain security
+
+Every image goes through three gates inside the build, before any moving tag points at it:
+
+| Gate | Tool | Blocks the release when |
+|---|---|---|
+| Vulnerability scan | Trivy | A HIGH or CRITICAL vulnerability with an available fix is found |
+| Software bill of materials | Syft (SPDX) | Always produced, attached to the GitHub Release and attested |
+| Signature and provenance | cosign keyless, GitHub attestations | Signing or attestation fails |
+
+Signing is **keyless**: the identity is the build workflow itself, proven by GitHub's OIDC token and recorded in the public Sigstore transparency log. No signing key exists, so none can leak. Each image also carries a **SLSA build provenance** attestation (which repository, workflow, commit and runner built it) and an **SBOM attestation**.
+
+Before any deploy, [`_deploy-render.yml`](.github/workflows/_deploy-render.yml) verifies every digest. The signature identity must be exactly `.github/workflows/_build.yml@refs/heads/main` in this repository, and the provenance must verify. An image built anywhere else, or before signing existed, is **refused** and nothing is deployed. This was tested by asking the pipeline to deploy v0.3.0, which predates signing: [all three images were refused](https://github.com/devwithvino/cicd_demo/actions/runs/38026973572) and staging stayed on 0.4.0.
+
+Anyone can check an image independently:
+
+```bash
+gh attestation verify oci://ghcr.io/devwithvino/shipyard-api@<digest> --repo devwithvino/cicd_demo
+```
+
+Hardening the gates surfaced real findings, which were fixed rather than ignored:
+
+- The Node and Python base images bundled npm and pip with known HIGH vulnerabilities. Both package managers are now removed from the runtime images, since nothing uses them at runtime.
+- CodeQL found a log injection path: a caller supplied `X-Request-ID` header was logged unchanged. Both api and web now accept only short, plain request IDs.
+
+### Code and repository scanning
+
+[`security.yml`](.github/workflows/security.yml) runs on every pull request, every push to `main` and every night, and reports to the repository's Security tab:
+
+| Check | Tool | Scope |
+|---|---|---|
+| Secret scanning | gitleaks | Full git history |
+| Code scanning | CodeQL (security extended) | Go, Python, TypeScript and the workflow files |
+| Dependency review | GitHub dependency review | New dependencies in a pull request, HIGH severity or worse, plus banned licenses |
+| Configuration scanning | Trivy | Dockerfiles and infrastructure as code |
+
+[`ci.yml`](.github/workflows/ci.yml) adds hadolint for Dockerfiles, actionlint for workflow correctness and zizmor for workflow security. [`pr-title.yml`](.github/workflows/pr-title.yml) requires Conventional Commit titles, because titles drive semantic versioning.
+
 ### Protecting production from infrastructure syncs
 
 Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If the Blueprint pointed at `main`, an infrastructure edit could push an unapproved build into production. Instead, each environment has its own moving tag that only advances after that environment's smoke test passes. A Blueprint sync can therefore only redeploy an image that already passed in that environment.
@@ -302,12 +343,14 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | Pull requests, pushes to `main` | Detects which services changed and checks only those. Go: golangci-lint and tests with the race detector. Python: ruff, mypy in strict mode, pytest with coverage. TypeScript: eslint, tsc, vitest with coverage, production build. Plus prose lint. One aggregate "CI passed" check for branch protection |
 | [`deliver.yml`](.github/workflows/deliver.yml) | Pushes to `main` (code changes), manual run | The delivery flow above |
-| [`_build.yml`](.github/workflows/_build.yml) | Called by other workflows | Reusable build once: native multi-arch matrix, push by digest, merge, tag, output a digest map |
-| [`_deploy-render.yml`](.github/workflows/_deploy-render.yml) | Called by other workflows | Reusable deploy to one environment: deploy by digest, smoke test, automatic rollback with incident issue on failure, move the environment tag on success, keep the deploy record for 90 days |
+| [`_build.yml`](.github/workflows/_build.yml) | Called by other workflows | Reusable build once: native multi-arch matrix, push by digest, merge, Trivy gate, SBOM, keyless signing, provenance and SBOM attestations, then tags |
+| [`_deploy-render.yml`](.github/workflows/_deploy-render.yml) | Called by other workflows | Reusable deploy to one environment: verify signature and provenance, deploy by digest, smoke test, automatic rollback with incident issue on failure, move the environment tag on success, keep the deploy record for 90 days |
 | [`demo-failure.yml`](.github/workflows/demo-failure.yml) | Manual run | Ships a deliberately broken release and verifies the automatic recovery |
 | [`rollback.yml`](.github/workflows/rollback.yml) | Manual run | One click rollback to the previous release, or a chosen one |
 | [`deploy-manual.yml`](.github/workflows/deploy-manual.yml) | Manual run | Deploy any released version to any environment, with a dry run option |
 | [`status-page.yml`](.github/workflows/status-page.yml) | After deploy related runs, every 6 hours, manual run | Recomputes DORA metrics and publishes the status page to GitHub Pages |
+| [`security.yml`](.github/workflows/security.yml) | Pull requests, pushes to `main`, nightly | gitleaks, CodeQL, dependency review and Trivy config scan, reported to the Security tab |
+| [`pr-title.yml`](.github/workflows/pr-title.yml) | Pull requests | Conventional Commit title check |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
 
@@ -315,6 +358,7 @@ Pipeline practices applied throughout:
 
 - **Least privilege.** Every workflow starts with `permissions: {}` and each job asks only for what it needs.
 - **Pinned actions.** Third party actions are pinned to full commit SHAs, not movable tags.
+- **One secret, by name.** Reusable workflows never inherit all secrets. The deploy receives exactly one secret name, and its value comes from the deploy job's GitHub environment.
 - **Concurrency control.** CI cancels outdated runs on the same pull request. Deliveries run one at a time. Each environment has its own deploy lock shared by every workflow, so a demo, a rollback and a delivery can never deploy to the same environment at once. Deploys are never cancelled midway.
 - **Readable summaries.** Every stage writes a Markdown summary to the run page, so anyone can see what was built, where it went and what was checked.
 
@@ -331,6 +375,7 @@ Pipeline practices applied throughout:
 - The status page is published through OIDC (`id-token: write`), with no stored deploy token.
 - Release tagging can use a short lived GitHub App token (`RELEASE_APP_CLIENT_ID` variable and `RELEASE_APP_PRIVATE_KEY` secret). The built in token can not tag a commit whose workflow files differ from `main`, which happens when `main` moves on while a release waits for approval. Without the App, the built in token is used.
 - Images are public, so Render needs no registry credential.
+- Images are signed and attested through OIDC. There is no signing key to store or rotate.
 - Render does not support OIDC federation, so its API key is stored as an environment secret, scoped per environment.
 - The Discord webhook is a repository secret. Notifications skip quietly when it is absent, so forks never fail.
 
@@ -421,7 +466,7 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 2 | CI, build once, staging, approval, production, release, Discord | Done |
 | 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Done |
 | 4 | Status page with live health and DORA metrics on GitHub Pages | Done |
-| 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance | Next |
+| 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance | In progress: gates live, pull request blocking demo next |
 | 6 | Pull request preview environments on Render | Planned |
 | 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Planned |
 | 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Planned |
