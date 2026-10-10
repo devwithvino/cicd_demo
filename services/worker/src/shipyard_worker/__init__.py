@@ -1,0 +1,1 @@
+"""Shipyard worker service."""
