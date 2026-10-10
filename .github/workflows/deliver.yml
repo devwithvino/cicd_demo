@@ -109,15 +109,22 @@ jobs:
       # from main, which happens when main moves on while a release waits for
       # approval. A GitHub App token is short lived, scoped to this repository
       # and allowed to do it. Without the App the built in token is used.
+      # A broken App setup must not block a release that already passed
+      # production, so this falls back to the built in token with a warning.
       - name: Mint a short lived release token
         id: app-token
         if: vars.RELEASE_APP_CLIENT_ID != ''
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-workflows: write
+
+      - name: Warn when the App token is unavailable
+        if: vars.RELEASE_APP_CLIENT_ID != '' && steps.app-token.outcome == 'failure'
+        run: echo "::warning title=Release token::The GitHub App token could not be minted. Check the App installation and RELEASE_APP_PRIVATE_KEY. Falling back to the built in token."
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
