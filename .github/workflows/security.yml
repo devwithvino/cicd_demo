@@ -127,6 +127,7 @@ jobs:
           scan-type: config
           scan-ref: .
           severity: HIGH,CRITICAL
+          limit-severities-for-sarif: true
           exit-code: "1"
           format: sarif
           output: trivy-config.sarif

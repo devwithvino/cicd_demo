@@ -9,6 +9,7 @@ import { type Config, versionInfo } from "./config.js";
 // The API may be cold starting on the free tier, which takes about a minute.
 const PROXY_TIMEOUT_MS = 75_000;
 const MAX_BODY_BYTES = 8 * 1024;
+const VALID_REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -142,7 +143,10 @@ export function createApp(cfg: Config, options: AppOptions): RequestListener {
 
   return (req, res) => {
     const started = process.hrtime.bigint();
-    const requestId = headerValue(req.headers["x-request-id"]) ?? randomBytes(8).toString("hex");
+    // Only trust a caller supplied request ID when it is short and plain,
+    // so it can not inject fake entries into the logs.
+    const supplied = headerValue(req.headers["x-request-id"]);
+    const requestId = supplied && VALID_REQUEST_ID.test(supplied) ? supplied : randomBytes(8).toString("hex");
     res.setHeader("X-Request-ID", requestId);
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
 

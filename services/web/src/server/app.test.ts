@@ -88,6 +88,13 @@ describe("web server", () => {
     expect((init.headers as Record<string, string>)["X-Request-ID"]).toBe("req-1");
   });
 
+  it("replaces unsafe request IDs before logging or forwarding them", async () => {
+    const ok = await fetch(`${base}/healthz`, { headers: { "x-request-id": "abc-123" } });
+    expect(ok.headers.get("x-request-id")).toBe("abc-123");
+    const forged = await fetch(`${base}/healthz`, { headers: { "x-request-id": "x".repeat(100) } });
+    expect(forged.headers.get("x-request-id")).not.toBe("x".repeat(100));
+  });
+
   it("forwards POST bodies", async () => {
     fetchMock.mockResolvedValue(new Response('{"id":"j1"}', { status: 202 }));
     const res = await fetch(`${base}/api/jobs`, { method: "POST", body: '{"payload":"x"}' });

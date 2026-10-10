@@ -170,3 +170,25 @@ func TestCORSPreflight(t *testing.T) {
 		t.Fatalf("preflight failed: %d %v", rec.Code, rec.Header())
 	}
 }
+
+func TestRequestIDIsSanitised(t *testing.T) {
+	h := newTestServer(t, &fakeStore{}, "")
+	cases := map[string]bool{
+		"abc-123":                    true,
+		"fake\nlevel=ERROR msg=hack": false,
+		strings.Repeat("a", 65):      false,
+	}
+	for id, kept := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Header.Set("X-Request-ID", id)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		got := rec.Header().Get("X-Request-ID")
+		if kept && got != id {
+			t.Errorf("valid id %q was replaced with %q", id, got)
+		}
+		if !kept && (got == id || got == "") {
+			t.Errorf("unsafe id %q was not replaced, got %q", id, got)
+		}
+	}
+}

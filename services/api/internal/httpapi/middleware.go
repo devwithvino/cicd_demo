@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var validRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 var (
 	requestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -39,8 +42,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 func instrument(route string, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		// Only trust a caller supplied request ID when it is short and plain,
+		// so it can not inject fake entries into the logs.
 		requestID := r.Header.Get("X-Request-ID")
-		if requestID == "" {
+		if !validRequestID.MatchString(requestID) {
 			requestID = newRequestID()
 		}
 		w.Header().Set("X-Request-ID", requestID)
