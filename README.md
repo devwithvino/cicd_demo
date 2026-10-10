@@ -4,6 +4,7 @@
 
 [![ci](https://github.com/devwithvino/cicd_demo/actions/workflows/ci.yml/badge.svg)](https://github.com/devwithvino/cicd_demo/actions/workflows/ci.yml)
 [![deliver](https://github.com/devwithvino/cicd_demo/actions/workflows/deliver.yml/badge.svg)](https://github.com/devwithvino/cicd_demo/actions/workflows/deliver.yml)
+[![status page](https://github.com/devwithvino/cicd_demo/actions/workflows/status-page.yml/badge.svg)](https://devwithvino.github.io/cicd_demo/)
 [![release](https://img.shields.io/github/v/release/devwithvino/cicd_demo?label=release)](https://github.com/devwithvino/cicd_demo/releases)
 [![images](https://img.shields.io/badge/images-amd64%20%7C%20arm64-blue)](https://github.com/devwithvino?tab=packages&repo_name=cicd_demo)
 [![cost](https://img.shields.io/badge/monthly%20cost-%240-brightgreen)](docs/free-tier-limits.md)
@@ -15,6 +16,7 @@ Shipyard is a reference delivery pipeline. A small microservices app travels fro
 
 | What | Link |
 |---|---|
+| **Pipeline status and DORA metrics** | https://devwithvino.github.io/cicd_demo/ |
 | Production app | https://shipyard-web-production.onrender.com |
 | Staging app | https://shipyard-web-staging.onrender.com |
 | Releases (versioned images and digests) | https://github.com/devwithvino/cicd_demo/releases |
@@ -32,6 +34,7 @@ For a business reader, this is what the project shows:
 - **People stay in control.** Staging updates automatically. Production needs one click of approval from a named reviewer.
 - **Bad releases undo themselves.** If a release fails its checks after going live, the pipeline puts the previous version back on its own, confirms it works, and opens an incident report. In the recorded demo, service was restored in 28 seconds.
 - **The team is told what happened.** Every delivery posts a plain language summary to the team chat, with the time it took.
+- **Performance is measured, not claimed.** A public status page tracks the four industry standard DORA delivery metrics, calculated from every real pipeline run.
 - **It costs nothing to run.** Everything uses free tiers, and the hosting account has no payment method, so a bill is impossible.
 
 ### Measured on a real run
@@ -276,6 +279,23 @@ Releases stay deployable after they ship. [`deploy-manual.yml`](.github/workflow
 
 Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If the Blueprint pointed at `main`, an infrastructure edit could push an unapproved build into production. Instead, each environment has its own moving tag that only advances after that environment's smoke test passes. A Blueprint sync can therefore only redeploy an image that already passed in that environment.
 
+### Status page and DORA metrics
+
+The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to show a client. It has three parts:
+
+- **Live environments.** The page asks every service in staging and production for its health and version, straight from the browser, and shows whether each environment runs one build everywhere.
+- **DORA metrics.** The four key measures of delivery performance from the DORA research program, each with its elite, high, medium or low rating.
+- **History.** Every deployment with its result (success, rolled back, not approved), deploy time and links to the run and any incident, plus releases and incidents.
+
+| DORA metric | How Shipyard measures it |
+|---|---|
+| Deployment frequency | Successful production deploys per week |
+| Lead time for changes | Median time from commit to live in production. Also shown without the approval wait |
+| Change failure rate | Share of production deploys that failed or were rolled back. Deliberate drills are excluded |
+| Time to restore | Median time from failure detected to service verified, read from incident issues |
+
+[`scripts/dora_metrics.py`](scripts/dora_metrics.py) computes all of it from GitHub Actions runs and jobs, the `deploy-record.json` every deploy uploads, incident issues and releases. [`status-page.yml`](.github/workflows/status-page.yml) regenerates the page after every deploy related run and every 6 hours, and publishes it to GitHub Pages using OIDC, so no deploy token is stored.
+
 ### Workflows
 
 | Workflow | Trigger | What it does |
@@ -287,6 +307,7 @@ Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If th
 | [`demo-failure.yml`](.github/workflows/demo-failure.yml) | Manual run | Ships a deliberately broken release and verifies the automatic recovery |
 | [`rollback.yml`](.github/workflows/rollback.yml) | Manual run | One click rollback to the previous release, or a chosen one |
 | [`deploy-manual.yml`](.github/workflows/deploy-manual.yml) | Manual run | Deploy any released version to any environment, with a dry run option |
+| [`status-page.yml`](.github/workflows/status-page.yml) | After deploy related runs, every 6 hours, manual run | Recomputes DORA metrics and publishes the status page to GitHub Pages |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
 
@@ -307,6 +328,8 @@ Pipeline practices applied throughout:
 | `infra` | Required reviewer, `main` branch only | Reserved for infrastructure as code |
 
 - Images are pushed with the short lived `GITHUB_TOKEN`. There is no personal access token anywhere.
+- The status page is published through OIDC (`id-token: write`), with no stored deploy token.
+- Release tagging can use a short lived GitHub App token (`RELEASE_APP_CLIENT_ID` variable and `RELEASE_APP_PRIVATE_KEY` secret). The built in token can not tag a commit whose workflow files differ from `main`, which happens when `main` moves on while a release waits for approval. Without the App, the built in token is used.
 - Images are public, so Render needs no registry credential.
 - Render does not support OIDC federation, so its API key is stored as an environment secret, scoped per environment.
 - The Discord webhook is a repository secret. Notifications skip quietly when it is absent, so forks never fail.
@@ -319,6 +342,7 @@ Pipeline practices applied throughout:
 |---|---|
 | GitHub Actions, including arm64 runners | Free and unlimited for public repositories |
 | GitHub Container Registry | Free for public images |
+| GitHub Pages status page | Free for public repositories |
 | Render web services and Key Value | Free instance types |
 | Render build minutes | Not used. Images are built in GitHub Actions |
 | Discord notifications | Free webhooks |
@@ -376,8 +400,10 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 │   ├── next_version.py    Semantic version from conventional commits
 │   ├── render_deploy.py   Deploy, record and roll back image digests on Render
 │   ├── smoke_test.py      Post deploy verification used everywhere
+│   ├── dora_metrics.py    DORA metrics and deployment history from real runs
 │   └── prose_lint.py      House writing style check
 ├── .github/workflows/     ci, deliver, demo-failure, rollback, deploy-manual and the reusable _ workflows
+├── status-site/           Static status page published to GitHub Pages
 ├── docs/
 │   └── free-tier-limits.md
 ├── render.yaml            Render Blueprint: 6 free web services and 1 Key Value
@@ -394,8 +420,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 1 | Application services, tests, Dockerfiles, local stack | Done |
 | 2 | CI, build once, staging, approval, production, release, Discord | Done |
 | 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Done |
-| 4 | Status page with live health and DORA metrics on GitHub Pages | Next |
-| 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance | Planned |
+| 4 | Status page with live health and DORA metrics on GitHub Pages | Done |
+| 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance | Next |
 | 6 | Pull request preview environments on Render | Planned |
 | 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Planned |
 | 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Planned |

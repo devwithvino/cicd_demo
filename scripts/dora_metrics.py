@@ -147,7 +147,7 @@ def collect(gh: GitHub, since: datetime) -> dict[str, Any]:
             created = parse_time(run["created_at"])
             if created is None or created < since:
                 continue
-            jobs = gh.get(f"/actions/runs/{run['id']}/jobs?per_page=100").get("jobs", [])
+            jobs = gh.get(f"/actions/runs/{run['id']}/jobs?per_page=100&filter=all").get("jobs", [])
             builds = [j for j in jobs if BUILD_JOB.match(j["name"]) and j.get("conclusion") == "success"]
             if builds:
                 span = seconds_between(min(parse_time(j["started_at"]) for j in builds),
