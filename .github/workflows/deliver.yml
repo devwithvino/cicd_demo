@@ -72,6 +72,10 @@ jobs:
       registry: ${{ needs.build.outputs.registry }}
       version: ${{ needs.version.outputs.version }}
       git_sha: ${{ github.sha }}
+    # Only this one secret name is passed. Its value comes from the GitHub
+    # environment of the deploy job, not from the repository.
+    secrets:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
 
   # The production environment requires a reviewer, so this job waits for a
   # human approval. It deploys the identical digests that passed staging.
@@ -90,6 +94,8 @@ jobs:
       registry: ${{ needs.build.outputs.registry }}
       version: ${{ needs.version.outputs.version }}
       git_sha: ${{ github.sha }}
+    secrets:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
 
   release:
     name: Release

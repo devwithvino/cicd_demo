@@ -81,6 +81,8 @@ jobs:
       registry: ${{ needs.build.outputs.registry }}
       version: ${{ needs.version.outputs.version }}
       git_sha: ${{ github.sha }}
+    secrets:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
 
   verify:
     name: Verify automatic recovery

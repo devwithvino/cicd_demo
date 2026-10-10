@@ -48,6 +48,8 @@ jobs:
       registry: ${{ needs.resolve.outputs.registry }}
       version: ${{ needs.resolve.outputs.version }}
       git_sha: ${{ needs.resolve.outputs.git_sha }}
+    secrets:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
 
   notify:
     name: Notify

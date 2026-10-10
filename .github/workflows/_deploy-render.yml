@@ -43,8 +43,8 @@ on:
     secrets:
       RENDER_API_KEY:
         description: >-
-          Render API key. Callers pass nothing: the job reads the value stored
-          in its GitHub environment, which takes precedence over the caller.
+          Render API key. Callers pass this one name, and the value stored
+          in the deploy job's GitHub environment takes precedence.
         required: false
     outputs:
       result:
