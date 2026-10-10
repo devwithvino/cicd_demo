@@ -15,6 +15,7 @@ import redis
 from shipyard_worker.config import Config
 from shipyard_worker.consumer import Consumer
 from shipyard_worker.http_server import make_server
+from shipyard_worker.monitoring import init_sentry, release
 
 _STANDARD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None)))
 
@@ -45,6 +46,8 @@ def main() -> None:
     configure_logging()
     log = logging.getLogger("shipyard.worker")
     cfg = Config.from_env()
+    if init_sentry(cfg):
+        log.info("sentry error reporting enabled", extra={"release": release(cfg)})
 
     client = redis.Redis.from_url(cfg.kv_url, socket_timeout=10, health_check_interval=30)
     consumer = Consumer(client, cfg.key_prefix, worker_label=f"worker {cfg.version}")

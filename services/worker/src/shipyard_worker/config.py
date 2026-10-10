@@ -23,6 +23,7 @@ class Config:
     commit: str
     build_time: str
     image_ref: str = ""
+    sentry_dsn: str = ""
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
@@ -37,6 +38,7 @@ class Config:
             commit=os.environ.get("GIT_SHA", "unknown"),
             build_time=os.environ.get("BUILD_TIME", "unknown"),
             image_ref=os.environ.get("IMAGE_REF", ""),
+            sentry_dsn=os.environ.get("SENTRY_DSN", ""),
         )
 
     def version_info(self) -> dict[str, object]:
