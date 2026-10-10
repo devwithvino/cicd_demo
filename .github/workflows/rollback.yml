@@ -1,0 +1,65 @@
+# One click rollback: return an environment to the previous release, or to a
+# chosen one, using the exact images that were released for it. This is the
+# manual path from the runbook. Automatic rollback already happens inside
+# every deploy when a smoke test fails.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to roll back
+        type: choice
+        options: [staging, production]
+        default: production
+      version:
+        description: Leave as "previous", or name a released version such as 0.1.0
+        type: string
+        default: previous
+      reason:
+        description: Why are you rolling back? Recorded in the notification
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: Resolve release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_resolve-release.yml
+    with:
+      environment: ${{ inputs.environment }}
+      version: ${{ inputs.version }}
+
+  rollback:
+    name: Roll back
+    needs: resolve
+    permissions:
+      contents: read
+      packages: write
+      issues: write
+    uses: ./.github/workflows/_deploy-render.yml
+    with:
+      environment: ${{ inputs.environment }}
+      digests: ${{ needs.resolve.outputs.digests }}
+      registry: ${{ needs.resolve.outputs.registry }}
+      version: ${{ needs.resolve.outputs.version }}
+      git_sha: ${{ needs.resolve.outputs.git_sha }}
+    secrets: inherit
+
+  notify:
+    name: Notify
+    if: always() && needs.resolve.result == 'success'
+    needs: [resolve, rollback]
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: ${{ needs.rollback.outputs.result == 'success' && 'rollback' || 'failure' }}
+      title: "Manual rollback of ${{ inputs.environment }} to ${{ needs.resolve.outputs.version }}: ${{ needs.rollback.outputs.result == 'success' && 'done' || 'needs attention' }}"
+      summary: "${{ github.actor }} rolled ${{ inputs.environment }} back from ${{ needs.resolve.outputs.current_version }} to ${{ needs.resolve.outputs.version }}. Reason: ${{ inputs.reason }}"
+      version: ${{ needs.resolve.outputs.version }}
+      environment: ${{ inputs.environment }}
+      link: ${{ needs.rollback.outputs.web_url }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

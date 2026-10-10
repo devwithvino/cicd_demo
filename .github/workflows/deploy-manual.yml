@@ -1,0 +1,65 @@
+# Manual deploy: put any released version into any environment, using the
+# images that were built and released for it. Same deploy, smoke test and
+# automatic rollback as the main pipeline. Production still needs approval.
+name: deploy-manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy
+        type: choice
+        options: [staging, production]
+        default: staging
+      version:
+        description: Released version to deploy, for example 0.1.1, or "previous"
+        type: string
+        required: true
+      dry_run:
+        description: Only show what would be deployed
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: Resolve release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_resolve-release.yml
+    with:
+      environment: ${{ inputs.environment }}
+      version: ${{ inputs.version }}
+
+  deploy:
+    name: Deploy
+    if: ${{ !inputs.dry_run }}
+    needs: resolve
+    permissions:
+      contents: read
+      packages: write
+      issues: write
+    uses: ./.github/workflows/_deploy-render.yml
+    with:
+      environment: ${{ inputs.environment }}
+      digests: ${{ needs.resolve.outputs.digests }}
+      registry: ${{ needs.resolve.outputs.registry }}
+      version: ${{ needs.resolve.outputs.version }}
+      git_sha: ${{ needs.resolve.outputs.git_sha }}
+    secrets: inherit
+
+  notify:
+    name: Notify
+    if: ${{ always() && !inputs.dry_run && needs.resolve.result == 'success' }}
+    needs: [resolve, deploy]
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: ${{ needs.deploy.outputs.result == 'success' && 'success' || (needs.deploy.outputs.result == 'rolled_back' && 'rollback' || 'failure') }}
+      title: "Manual deploy of ${{ needs.resolve.outputs.version }} to ${{ inputs.environment }}: ${{ needs.deploy.outputs.result || 'failed' }}"
+      summary: "${{ inputs.environment }} moved from ${{ needs.resolve.outputs.current_version }} to ${{ needs.resolve.outputs.version }} (result: ${{ needs.deploy.outputs.result || 'failed' }}), reusing the released images without a rebuild."
+      version: ${{ needs.resolve.outputs.version }}
+      environment: ${{ inputs.environment }}
+      link: ${{ needs.deploy.outputs.web_url }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

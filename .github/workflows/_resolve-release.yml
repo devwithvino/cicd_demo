@@ -1,0 +1,103 @@
+# Reusable lookup: turn a released version (or "previous") into the exact
+# image digests and commit, so manual deploys and rollbacks reuse the images
+# that were already built, tested and released. Nothing is rebuilt.
+#
+# "previous" means the newest release older than what the environment runs
+# now. What an environment runs is read from its environment tag, which the
+# pipeline only moves after a passing smoke test.
+name: _resolve-release
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: staging or production
+        required: true
+        type: string
+      version:
+        description: A released version such as 0.1.1, or "previous"
+        required: true
+        type: string
+    outputs:
+      version:
+        value: ${{ jobs.resolve.outputs.version }}
+      current_version:
+        value: ${{ jobs.resolve.outputs.current_version }}
+      digests:
+        value: ${{ jobs.resolve.outputs.digests }}
+      registry:
+        value: ${{ jobs.resolve.outputs.registry }}
+      git_sha:
+        value: ${{ jobs.resolve.outputs.git_sha }}
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: resolve ${{ inputs.version }} for ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      current_version: ${{ steps.resolve.outputs.current_version }}
+      digests: ${{ steps.resolve.outputs.digests }}
+      registry: ${{ steps.resolve.outputs.registry }}
+      git_sha: ${{ steps.resolve.outputs.git_sha }}
+    steps:
+      - name: Resolve version to digests
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          registry="ghcr.io/${OWNER,,}/shipyard"
+          label() {
+            docker buildx imagetools inspect "$1" --format '{{json .Image}}' \
+              | jq -r 'if has("config") then . else .["linux/amd64"] end | .config.Labels["org.opencontainers.image.version"] // empty'
+          }
+
+          current=$(label "${registry}-web:${ENVIRONMENT}")
+          echo "${ENVIRONMENT} currently runs ${current:-unknown}"
+
+          releases=$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --limit 100 --json tagName -q '.[].tagName' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V)
+
+          if [ "${REQUESTED}" = "previous" ]; then
+            [ -n "${current}" ] || { echo "::error::Can not tell what ${ENVIRONMENT} runs, so there is no previous release"; exit 1; }
+            target=$(printf '%s\n%s\n' "${releases}" "${current}" | sort -uV | grep -B1 -xF "${current}" | head -n1)
+            if [ -z "${target}" ] || [ "${target}" = "${current}" ]; then
+              echo "::error::No release older than ${current} exists"; exit 1
+            fi
+          else
+            target="${REQUESTED#v}"
+            echo "${releases}" | grep -qxF "${target}" || { echo "::error::${target} is not a released version. Releases: $(tr '\n' ' ' <<< "${releases}")"; exit 1; }
+          fi
+
+          digests=$(for svc in api worker web; do
+            digest=$(docker buildx imagetools inspect "${registry}-${svc}:${target}" --format '{{json .Manifest}}' | jq -r .digest)
+            jq -n --arg k "${svc}" --arg v "${digest}" '{($k): $v}'
+          done | jq -cs add)
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/v${target}" -q .sha)
+
+          {
+            echo "version=${target}"
+            echo "current_version=${current}"
+            echo "digests=${digests}"
+            echo "registry=${registry}"
+            echo "git_sha=${sha}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Release plan for ${ENVIRONMENT}"
+            echo ""
+            echo "| | Version |"
+            echo "|---|---|"
+            echo "| Running now | ${current:-unknown} |"
+            echo "| Will deploy | ${target} at \`${sha:0:7}\` |"
+            echo ""
+            echo "| Service | Released digest |"
+            echo "|---|---|"
+            echo "${digests}" | jq -r 'to_entries[] | "| \(.key) | `\(.value)` |"'
+          } >> "$GITHUB_STEP_SUMMARY"
