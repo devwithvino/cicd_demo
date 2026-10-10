@@ -171,6 +171,10 @@ def collect(gh: GitHub, since: datetime) -> dict[str, Any]:
                     result = "success"
                 elif job["conclusion"] in ("failure", "cancelled") and not steps:
                     result = "not_approved"
+                elif job["conclusion"] == "cancelled":
+                    # Cancelled before it changed anything, for example while
+                    # waiting for approval. Not a change failure.
+                    result = "cancelled"
                 elif (run["id"], env) in incident_by_run_env:
                     result = "rolled_back"
                 elif job["conclusion"] == "skipped":
@@ -232,7 +236,7 @@ def observed_days(data: dict[str, Any], window_days: int, now: datetime) -> floa
 
 def dora(data: dict[str, Any], window_days: float) -> dict[str, Any]:
     prod = [d for d in data["deployments"]
-            if d["environment"] == "production" and d["result"] not in ("not_approved", "refused")]
+            if d["environment"] == "production" and d["result"] not in ("not_approved", "refused", "cancelled")]
     real = [d for d in prod if not d["demo"]]
     successes = [d for d in real if d["result"] == "success"]
     failures = [d for d in real if d["result"] in FAILED_RESULTS]

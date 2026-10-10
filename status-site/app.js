@@ -43,6 +43,7 @@ const RESULT_LABELS = {
   failed: "failed",
   not_approved: "not approved",
   refused: "refused, unsigned",
+  cancelled: "cancelled",
 };
 
 const RATING_TEXT = {
