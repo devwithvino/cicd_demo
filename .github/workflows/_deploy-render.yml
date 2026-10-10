@@ -46,6 +46,9 @@ on:
           Render API key. Callers pass this one name, and the value stored
           in the deploy job's GitHub environment takes precedence.
         required: false
+      SENTRY_AUTH_TOKEN:
+        description: Sentry token for releases, deploy markers and the post deploy gate
+        required: false
     outputs:
       result:
         description: success, rolled_back, rollback_failed or failed
@@ -146,6 +149,16 @@ jobs:
             exit 1
           fi
 
+      - name: Create the Sentry release
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+        # Telemetry bookkeeping must never block a deploy.
+        continue-on-error: true
+        run: python3 scripts/sentry_check.py release --version "${VERSION}" --commit "${GIT_SHA}"
+
       - name: Deploy digests to Render
         id: deploy
         env:
@@ -175,6 +188,44 @@ jobs:
             --summary "$GITHUB_STEP_SUMMARY" --json-out smoke.json
           rc=$?
           echo "T_SMOKE_DONE=$(date -u +%s)" >> "$GITHUB_ENV"
+          exit "${rc}"
+
+      # Second opinion from production telemetry: any error that Sentry saw
+      # for the first time in this release and environment since the deploy
+      # started fails the deploy, which triggers the rollback below. A Sentry
+      # outage only warns, so it can never block a release.
+      - name: Sentry gate
+        id: sentry-gate
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+        run: |
+          if [ -z "${SENTRY_AUTH_TOKEN}" ] || [ -z "${SENTRY_ORG}" ]; then
+            echo "Sentry is not configured, gate skipped."
+            exit 0
+          fi
+          # Give Sentry time to ingest anything the smoke test triggered.
+          sleep 60
+          minutes=$(( ( $(date -u +%s) - T_DEPLOY_START ) / 60 + 2 ))
+          set +e
+          python3 scripts/sentry_check.py new-issues --version "${VERSION}" \
+            --environment "${ENVIRONMENT}" --minutes "${minutes}" --out sentry.json
+          rc=$?
+          set -e
+          if [ "${rc}" -eq 2 ]; then
+            echo "::warning title=Sentry gate::Could not query Sentry, so the gate did not block this deploy."
+            exit 0
+          fi
+          if [ "${rc}" -ne 0 ]; then
+            echo "T_SMOKE_DONE=$(date -u +%s)" >> "$GITHUB_ENV"
+            {
+              echo "### Sentry gate: new errors in ${VERSION} on ${ENVIRONMENT}"
+              echo ""
+              jq -r '.issues[] | "- [\(.title)](\(.link)) (\(.count) events)"' sentry.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit "${rc}"
 
       # Failure path: put back exactly what was running before.
@@ -218,6 +269,15 @@ jobs:
             docker buildx imagetools create -t "${REGISTRY}-${svc}:${ENVIRONMENT}" "${REGISTRY}-${svc}@${digest}"
           done
 
+      - name: Record the deploy in Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+        continue-on-error: true
+        run: python3 scripts/sentry_check.py deploy --version "${VERSION}" --environment "${ENVIRONMENT}"
+
       - name: Work out the result
         id: result
         if: always()
@@ -227,11 +287,12 @@ jobs:
           ROLLBACK: ${{ steps.rollback.outcome }}
           VERIFY: ${{ steps.verify.outcome }}
           SIGNATURES: ${{ steps.verify-signatures.outcome }}
+          SENTRY_GATE: ${{ steps.sentry-gate.outcome }}
         run: |
           if [ "${SIGNATURES}" = "failure" ]; then
             # Nothing was deployed, so this is a refusal, not a change failure.
             result=refused
-          elif [ "${DEPLOY}" = "success" ] && [ "${SMOKE}" = "success" ]; then
+          elif [ "${DEPLOY}" = "success" ] && [ "${SMOKE}" = "success" ] && [ "${SENTRY_GATE}" != "failure" ]; then
             result=success
           elif [ "${ROLLBACK}" = "success" ] && [ "${VERIFY}" = "success" ]; then
             result=rolled_back
@@ -243,6 +304,7 @@ jobs:
           failed=""
           if [ -f smoke.json ]; then failed=$(jq -r '.failed | join(", ")' smoke.json); fi
           [ "${result}" = "refused" ] && failed="signature or provenance verification"
+          if [ -z "${failed}" ] && [ "${SENTRY_GATE}" = "failure" ]; then failed="new errors in Sentry"; fi
           [ -z "${failed}" ] && [ "${DEPLOY}" != "success" ] && failed="deploy did not go live"
           restore=""
           if [ -n "${T_RESTORED:-}" ]; then restore=$(( T_RESTORED - T_FAILURE_DETECTED )); fi
@@ -268,7 +330,12 @@ jobs:
           RESTORED_VERSION: ${{ steps.verify.outputs.version }}
           RESTORED_COMMIT: ${{ steps.verify.outputs.commit }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
         run: |
+          sentry="not configured"
+          if [ -n "${SENTRY_ORG}" ]; then
+            sentry="https://${SENTRY_ORG}.sentry.io/issues/?query=release%3Ashipyard%40${VERSION}&environment=${ENVIRONMENT}"
+          fi
           at() { [ -n "${1:-}" ] && date -u -d "@$1" +%H:%M:%S || echo "n/a"; }
           if [ "${RESULT}" = "rolled_back" ]; then
             headline="Service was restored automatically in ${RESTORE}s. No action is needed to recover."
@@ -291,6 +358,7 @@ jobs:
           | Restored release | ${RESTORED_VERSION:-unknown} at \`${RESTORED_COMMIT:0:7}\` |
           | Time to restore | ${RESTORE:-n/a} seconds |
           | Pipeline run | ${RUN_URL} |
+          | Errors in Sentry | ${sentry} |
 
           ## Timeline (UTC)
 

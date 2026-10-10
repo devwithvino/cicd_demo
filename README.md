@@ -286,6 +286,25 @@ Releases stay deployable after they ship. [`deploy-manual.yml`](.github/workflow
 - Production still requires approval for both.
 - An unknown version is refused, with the list of available releases.
 
+### Error monitoring with Sentry
+
+Every service reports errors to [Sentry](https://sentry.io), and so does the dashboard in the browser:
+
+| Where | How |
+|---|---|
+| api (Go) | `sentry-go` with HTTP middleware that recovers and reports panics, plus explicit reports for failed operations |
+| worker (Python) | `sentry-sdk`, every logged exception becomes an event |
+| web (Node.js) | `@sentry/node` for unexpected request errors |
+| Browser | The pinned Sentry bundle, verified by its integrity hash, loaded only when a DSN is configured |
+
+Events carry the release (`shipyard@<version>`, baked into the image), the environment (from runtime configuration), the service and the commit. Only staging and production report: the pipeline sets the DSN on those deploys, previews drop it, and local and Kubernetes runs have none, so the free quota is never spent on noise.
+
+Sentry is part of the release, not just a dashboard:
+
+- **Releases and deploy markers.** Each deploy creates the Sentry release and, once verified, records a deploy to that environment, so every error points at the exact release and when it went live.
+- **The Sentry gate.** After the smoke test passes, the pipeline waits a minute and asks Sentry whether this release raised any new error in this environment. Any new error fails the deploy and triggers the automatic rollback, verification and incident issue. The incident links straight to the release's errors in Sentry. If Sentry itself is unreachable the gate only warns, so a Sentry outage can never block a release.
+- **Errors in Slack, on the free plan.** Sentry's free plan has no Slack integration, so [`sentry-slack.yml`](.github/workflows/sentry-slack.yml) checks Sentry every 30 minutes and posts issues first seen in staging or production since its previous run.
+
 ### Supply chain security
 
 Every image goes through three gates inside the build, before any moving tag points at it:
@@ -449,6 +468,7 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 | [`nightly.yml`](.github/workflows/nightly.yml) | Nightly, manual run | Re scan running images, synthetic production check, link check |
 | [`scorecard.yml`](.github/workflows/scorecard.yml) | Pushes to `main`, weekly | OpenSSF Scorecard |
 | [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Dependabot pull requests | Queues patch and minor updates for auto merge |
+| [`sentry-slack.yml`](.github/workflows/sentry-slack.yml) | Every 30 minutes, manual run | Posts new Sentry issues from staging and production to Slack |
 | [`platform.yml`](.github/workflows/platform.yml) | Manual run | Brings staging, production or both down (suspend) or up (resume and smoke test), pausing scheduled checks while production is off |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Slack notification: colored status, summary, version, commit, timings and link buttons, including approval requests |
 | [`_kind-e2e.yml`](.github/workflows/_kind-e2e.yml) | Called by deliver and pr-preview | Same digests on a Kind cluster: verify, helm install, helm test, smoke test, k6 performance gate |
@@ -490,6 +510,7 @@ Pipeline practices applied throughout:
 | Render web services and Key Value | Free instance types |
 | Render build minutes | Not used. Images are built in GitHub Actions |
 | Slack notifications | Free incoming webhooks |
+| Sentry error monitoring | Free Developer plan (5,000 errors a month); Slack alerts come from a scheduled workflow instead of the paid integration |
 
 Free tiers come with limits: instances sleep after 15 minutes idle, 750 instance hours a month are shared by all services, one free Key Value instance, 5 GB of bandwidth a month, and no free background worker type (so the worker runs as a free web service). Each limit and how the design handles it is documented in [docs/free-tier-limits.md](docs/free-tier-limits.md), together with the results of the platform spike that proved the approach before any code was written.
 
@@ -568,6 +589,7 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 │   ├── render_preview.py  Wired pull request previews on Render, teardown and janitor
 │   ├── smoke_test.py      Post deploy verification used everywhere
 │   ├── dora_metrics.py    DORA metrics and deployment history from real runs
+│   ├── sentry_check.py    Sentry releases, deploy markers, the post deploy gate and the Slack digest
 │   └── prose_lint.py      House writing style check
 ├── .github/workflows/     ci, deliver, demo-failure, rollback, deploy-manual and the reusable _ workflows
 ├── status-site/           Static status page published to GitHub Pages

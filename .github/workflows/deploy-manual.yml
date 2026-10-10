@@ -64,6 +64,7 @@ jobs:
       git_sha: ${{ needs.resolve.outputs.git_sha }}
     secrets:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   notify:
     name: Notify

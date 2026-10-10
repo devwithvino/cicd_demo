@@ -76,6 +76,7 @@ jobs:
     # environment of the deploy job, not from the repository.
     secrets:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   # Deploy anywhere: the same digests on a throwaway Kubernetes cluster, in
   # parallel with staging. Production needs both to pass.
@@ -127,6 +128,7 @@ jobs:
       git_sha: ${{ github.sha }}
     secrets:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   release:
     name: Release
