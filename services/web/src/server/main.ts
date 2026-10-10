@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 
 import { createApp, log } from "./app.js";
 import { loadConfig } from "./config.js";
+import { flushSentry, initSentry, release } from "./monitoring.js";
 
 const cfg = loadConfig();
+if (initSentry(cfg)) log("info", "sentry error reporting enabled", { release: release(cfg) });
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const server = createServer(createApp(cfg, { staticDir }));
 
@@ -20,7 +22,7 @@ server.listen(cfg.port, () => {
 
 function shutdown(signal: string): void {
   log("info", "shutdown signal received, draining connections", { signal });
-  server.close(() => process.exit(0));
+  server.close(() => void flushSentry().finally(() => process.exit(0)));
   setTimeout(() => process.exit(0), 10_000).unref();
 }
 

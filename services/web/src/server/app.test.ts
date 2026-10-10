@@ -62,7 +62,15 @@ describe("web server", () => {
 
   it("serves runtime config without secrets", async () => {
     const cfg = (await (await fetch(`${base}/config.json`)).json()) as Record<string, unknown>;
-    expect(Object.keys(cfg).sort()).toEqual(["environment", "repoUrl", "statusPageUrl"]);
+    expect(Object.keys(cfg).sort()).toEqual(["environment", "release", "repoUrl", "sentryDsn", "statusPageUrl"]);
+    expect(cfg.release).toBe("shipyard@1.2.3");
+    expect(cfg.sentryDsn).toBe("");
+  });
+
+  it("allows only the pinned Sentry CDN and Sentry ingest in the CSP", async () => {
+    const csp = (await fetch(`${base}/`)).headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("script-src 'self' https://browser.sentry-cdn.com");
+    expect(csp).toContain("connect-src 'self' https://*.sentry.io");
   });
 
   it("serves the dashboard with security headers", async () => {
