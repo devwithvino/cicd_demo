@@ -18,6 +18,7 @@ type Config struct {
 	WorkerURL   string
 	ImageRef    string
 	RepoURL     string
+	SentryDSN   string
 }
 
 // Load reads configuration from the environment, applying local defaults.
@@ -30,6 +31,7 @@ func Load() Config {
 		WorkerURL:   strings.TrimRight(get("WORKER_URL", "http://localhost:8081"), "/"),
 		ImageRef:    get("IMAGE_REF", ""),
 		RepoURL:     strings.TrimRight(get("REPO_URL", ""), "/"),
+		SentryDSN:   get("SENTRY_DSN", ""),
 	}
 }
 

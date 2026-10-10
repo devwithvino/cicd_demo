@@ -41,6 +41,40 @@ interface PageConfig {
   environment: string;
   repoUrl: string;
   statusPageUrl: string;
+  sentryDsn?: string;
+  release?: string;
+}
+
+interface SentryBrowser {
+  init(options: Record<string, unknown>): void;
+}
+
+declare global {
+  interface Window {
+    Sentry?: SentryBrowser;
+  }
+}
+
+// Pinned Sentry browser bundle, verified by its integrity hash before it runs.
+const SENTRY_BUNDLE = "https://browser.sentry-cdn.com/11.6.0/bundle.min.js";
+const SENTRY_INTEGRITY = "sha384-rlznaM0ZTdlKZRMeVO8a43/HbvKhLqHABk8FFcshozlZDT84nCfG8GdTIWeQioHe";
+
+/** Report browser errors to Sentry, only when the server provides a DSN. */
+function enableSentry(cfg: PageConfig): void {
+  if (!cfg.sentryDsn) return;
+  const script = document.createElement("script");
+  script.src = SENTRY_BUNDLE;
+  script.integrity = SENTRY_INTEGRITY;
+  script.crossOrigin = "anonymous";
+  script.onload = () => {
+    window.Sentry?.init({
+      dsn: cfg.sentryDsn,
+      environment: cfg.environment,
+      release: cfg.release,
+      initialScope: { tags: { service: "web-browser" } },
+    });
+  };
+  document.head.appendChild(script);
 }
 
 const REFRESH_MS = 10_000;
@@ -231,6 +265,7 @@ async function init(): Promise<void> {
   const cfg = await getJson<PageConfig>("/config.json").catch(
     (): PageConfig => ({ environment: "unknown", repoUrl: "", statusPageUrl: "" }),
   );
+  enableSentry(cfg);
   document.body.dataset.theme = themeFor(cfg.environment);
   byId("env-pill").textContent = cfg.environment;
   document.title = `Shipyard (${cfg.environment})`;

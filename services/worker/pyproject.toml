@@ -7,6 +7,7 @@ license = "MIT"
 dependencies = [
     "redis>=5.2",
     "prometheus-client>=0.21",
+    "sentry-sdk>=2.71",
 ]
 
 [dependency-groups]

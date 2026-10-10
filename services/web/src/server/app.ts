@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import { Counter, Histogram, Registry, collectDefaultMetrics } from "@prometheus-io/client";
 
 import { type Config, versionInfo } from "./config.js";
+import { captureError, release } from "./monitoring.js";
 
 // The API may be cold starting on the free tier, which takes about a minute.
 const PROXY_TIMEOUT_MS = 75_000;
@@ -22,7 +23,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy":
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self' https://browser.sentry-cdn.com; connect-src 'self' https://*.sentry.io; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "X-Frame-Options": "DENY",
@@ -69,10 +70,13 @@ export function createApp(cfg: Config, options: AppOptions): RequestListener {
       return "/version";
     }
     if (path === "/config.json") {
+      // The Sentry DSN is public by design: browsers need it to report errors.
       sendJson(res, 200, {
         environment: cfg.environment,
         repoUrl: cfg.repoUrl,
         statusPageUrl: cfg.statusPageUrl,
+        sentryDsn: cfg.sentryDsn,
+        release: release(cfg),
       });
       return "/config.json";
     }
@@ -153,6 +157,7 @@ export function createApp(cfg: Config, options: AppOptions): RequestListener {
     route(req, res)
       .catch((error: unknown) => {
         log("error", "request failed", { requestId, error: String(error) });
+        captureError(error, requestId);
         if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
         return "error";
       })

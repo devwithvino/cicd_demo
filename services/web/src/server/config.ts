@@ -8,6 +8,7 @@ export interface Config {
   repoUrl: string;
   statusPageUrl: string;
   imageRef: string;
+  sentryDsn: string;
   version: string;
   commit: string;
   buildTime: string;
@@ -26,6 +27,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     repoUrl: trimSlash(env.REPO_URL ?? ""),
     statusPageUrl: trimSlash(env.STATUS_PAGE_URL ?? ""),
     imageRef: env.IMAGE_REF ?? "",
+    sentryDsn: env.SENTRY_DSN ?? "",
     version: env.APP_VERSION ?? "dev",
     commit: env.GIT_SHA ?? "unknown",
     buildTime: env.BUILD_TIME ?? "unknown",

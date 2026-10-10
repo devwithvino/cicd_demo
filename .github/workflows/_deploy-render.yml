@@ -152,11 +152,14 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           REGISTRY: ${{ inputs.registry }}
           DIGESTS: ${{ inputs.digests }}
+          # Public by design, stored as a repository variable. Empty keeps Sentry off.
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
         run: |
           echo "T_DEPLOY_START=$(date -u +%s)" >> "$GITHUB_ENV"
           set +e
           python3 scripts/render_deploy.py deploy \
-            --services "${SERVICES}" --registry "${REGISTRY}" --digests "${DIGESTS}" --state deploy-state.json
+            --services "${SERVICES}" --registry "${REGISTRY}" --digests "${DIGESTS}" --state deploy-state.json \
+            --env "SENTRY_DSN=${SENTRY_DSN}"
           rc=$?
           echo "T_DEPLOY_DONE=$(date -u +%s)" >> "$GITHUB_ENV"
           [ -f deploy-state.json ] && echo "seconds=$(jq .seconds deploy-state.json)" >> "$GITHUB_OUTPUT"

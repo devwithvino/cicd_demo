@@ -17,6 +17,7 @@ import (
 	"github.com/devwithvino/cicd_demo/services/api/internal/config"
 	"github.com/devwithvino/cicd_demo/services/api/internal/httpapi"
 	"github.com/devwithvino/cicd_demo/services/api/internal/jobs"
+	"github.com/devwithvino/cicd_demo/services/api/internal/monitoring"
 )
 
 func main() {
@@ -29,6 +30,15 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	cfg := config.Load()
+
+	enabled, err := monitoring.Init(cfg)
+	if err != nil {
+		logger.Warn("sentry disabled: could not initialise", "error", err)
+	}
+	if enabled {
+		logger.Info("sentry error reporting enabled", "release", monitoring.Release())
+		defer monitoring.Flush()
+	}
 
 	opts, err := redis.ParseURL(cfg.KVURL)
 	if err != nil {

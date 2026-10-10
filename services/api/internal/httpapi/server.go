@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getsentry/sentry-go"
+	sentryhttp "github.com/getsentry/sentry-go/http"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/devwithvino/cicd_demo/services/api/internal/buildinfo"
@@ -64,7 +66,8 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle(pattern, instrument(route, s.logger, handler))
 	}
 	mux.Handle("GET /metrics", promhttp.Handler())
-	return cors(mux)
+	// Sentry recovers panics and reports them. Without a DSN it does nothing.
+	return cors(sentryhttp.New(sentryhttp.Options{Repanic: false}).Handle(mux))
 }
 
 // VersionInfo describes exactly which build is running and where.
@@ -169,6 +172,7 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	if buildinfo.IsBroken() {
 		// Deliberate defect for the rollback demo. Liveness stays green, so the
 		// platform keeps the release, and only the pipeline smoke test catches it.
+		reportError(r, errors.New("job submission is broken in this release"))
 		writeError(w, http.StatusInternalServerError, "job submission is broken in this release")
 		return
 	}
@@ -185,6 +189,7 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 	job, err := s.store.Create(r.Context(), req.Payload, "api "+buildinfo.Version)
 	if err != nil {
 		s.logger.Error("create job failed", "error", err)
+		reportError(r, err)
 		writeError(w, http.StatusServiceUnavailable, "could not queue job")
 		return
 	}
@@ -199,6 +204,7 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.logger.Error("get job failed", "error", err)
+		reportError(r, err)
 		writeError(w, http.StatusServiceUnavailable, "could not read job")
 		return
 	}
@@ -209,6 +215,7 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	recent, err := s.store.Recent(r.Context())
 	if err != nil {
 		s.logger.Error("list jobs failed", "error", err)
+		reportError(r, err)
 		writeError(w, http.StatusServiceUnavailable, "could not list jobs")
 		return
 	}
@@ -223,4 +230,14 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 
 func writeError(w http.ResponseWriter, code int, message string) {
 	writeJSON(w, code, map[string]string{"error": message})
+}
+
+// reportError sends an error to Sentry with the request attached. It is a
+// no op when Sentry is not configured.
+func reportError(r *http.Request, err error) {
+	if hub := sentry.GetHubFromContext(r.Context()); hub != nil {
+		hub.CaptureException(err)
+		return
+	}
+	sentry.CaptureException(err)
 }
