@@ -29,6 +29,16 @@ Shipyard is a reference delivery pipeline. A small microservices app travels fro
 >
 > The demo runs on free instances that sleep after 15 minutes without traffic. The first visit can take about a minute while the services wake up. The dashboard says so and refreshes on its own.
 
+## For clients
+
+| Read | What it covers |
+|---|---|
+| [Case study](docs/case-study.md) | What the pipeline replaces, measured results and real problems it caught |
+| [Services offered](docs/services-offered.md) | Each service, mapped to working proof in this repository |
+| [Demo script](docs/demo-script.md) | A three minute walkthrough you can watch or reproduce |
+| [Runbook](docs/runbook.md) | Rollback, incidents, secret rotation and adding a new service |
+| [Operations guide](docs/operations.md) | Pausing and resuming the platform, teardown and rebuild |
+
 ## In 60 seconds
 
 For a business reader, this is what the project shows:
@@ -594,8 +604,12 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 ├── .github/workflows/     ci, deliver, demo-failure, rollback, deploy-manual and the reusable _ workflows
 ├── status-site/           Static status page published to GitHub Pages
 ├── docs/
-│   ├── free-tier-limits.md
-│   └── operations.md      Bring the platform down and up, teardown and rebuild
+│   ├── case-study.md      Before and after, with measured results
+│   ├── services-offered.md
+│   ├── demo-script.md
+│   ├── runbook.md         Rollback, incidents, secret rotation, new services
+│   ├── operations.md      Bring the platform down and up, teardown and rebuild
+│   └── free-tier-limits.md
 ├── render.yaml            Render Blueprint: 6 free web services and 1 Key Value
 └── docker-compose.yml     Local stack using the same images
 ```
@@ -615,7 +629,7 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 6 | Pull request preview environments on Render | Done |
 | 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Done |
 | 8 | Dependabot with safe auto merge, nightly checks, OpenSSF Scorecard hardening | Done |
-| 9 | Case study, runbook, demo script and services overview | Next |
+| 9 | Case study, runbook, demo script and services overview | Done |
 
 ## License
 
