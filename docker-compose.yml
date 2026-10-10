@@ -27,7 +27,7 @@ x-runtime-env: &runtime-env
 
 services:
   kv:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:9-alpine
     command: ["valkey-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
