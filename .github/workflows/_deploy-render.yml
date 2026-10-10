@@ -1,0 +1,133 @@
+# Reusable deploy: promote exact image digests to one Render environment,
+# then prove the release works with a smoke test.
+#
+# Service IDs and URLs are GitHub environment variables. The Render API key is
+# a GitHub environment secret, so the production key is only released to this
+# job after the production environment's approval rule passes.
+name: _deploy-render
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment to deploy to (staging or production)
+        required: true
+        type: string
+      digests:
+        description: JSON map of service name to image digest
+        required: true
+        type: string
+      registry:
+        description: Image name prefix, for example ghcr.io/owner/shipyard
+        required: true
+        type: string
+      version:
+        description: Release version, used in the summary
+        required: true
+        type: string
+      git_sha:
+        description: Commit every service must report after the deploy
+        required: true
+        type: string
+    outputs:
+      deploy_seconds:
+        description: How long the deploy took
+        value: ${{ jobs.deploy.outputs.deploy_seconds }}
+      web_url:
+        description: Public URL of the environment
+        value: ${{ jobs.deploy.outputs.web_url }}
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.WEB_URL }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      deploy_seconds: ${{ steps.deploy.outputs.seconds }}
+      web_url: ${{ vars.WEB_URL }}
+    env:
+      SERVICES: api=${{ vars.RENDER_API_SERVICE_ID }},worker=${{ vars.RENDER_WORKER_SERVICE_ID }},web=${{ vars.RENDER_WEB_SERVICE_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Deploy digests to Render
+        id: deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          REGISTRY: ${{ inputs.registry }}
+          DIGESTS: ${{ inputs.digests }}
+        run: |
+          python3 scripts/render_deploy.py deploy \
+            --services "${SERVICES}" --registry "${REGISTRY}" --digests "${DIGESTS}" --state deploy-state.json
+          echo "seconds=$(jq .seconds deploy-state.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        id: smoke
+        env:
+          WEB_URL: ${{ vars.WEB_URL }}
+          API_URL: ${{ vars.API_URL }}
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          GIT_SHA: ${{ inputs.git_sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          python3 scripts/smoke_test.py \
+            --web "${WEB_URL}" --api "${API_URL}" --worker "${WORKER_URL}" \
+            --expect-sha "${GIT_SHA}" --title "Smoke test: ${ENVIRONMENT}" --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The environment tag always points at what passed in this environment.
+      # render.yaml references these tags, so a blueprint sync can only ever
+      # redeploy an approved, verified image. Retagging never rebuilds.
+      - name: Move environment tag to the verified digests
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          DIGESTS: ${{ inputs.digests }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
+            digest=$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')
+            docker buildx imagetools create -t "${REGISTRY}-${svc}:${ENVIRONMENT}" "${REGISTRY}-${svc}@${digest}"
+          done
+
+      - name: Deploy summary
+        if: always()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
+          WEB_URL: ${{ vars.WEB_URL }}
+        run: |
+          [ -f deploy-state.json ] || exit 0
+          {
+            echo "### Deployed ${VERSION} to ${ENVIRONMENT} in $(jq .seconds deploy-state.json)s"
+            echo ""
+            echo "Live at ${WEB_URL}"
+            echo ""
+            echo "| Service | Status | Seconds | Now running | Previously running |"
+            echo "|---|---|---|---|---|"
+            jq -r '.services | to_entries[] | "| \(.key) | \(.value.status) | \(.value.seconds // "") | `\(.value.newRef | split("@")[1][0:19])` | `\((.value.previousRef // "nothing") | split("/")[-1][0:40])` |"' deploy-state.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep deploy record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deploy-state-${{ inputs.environment }}
+          path: deploy-state.json
+          if-no-files-found: ignore
+          retention-days: 90

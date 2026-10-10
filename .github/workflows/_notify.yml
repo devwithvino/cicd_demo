@@ -1,0 +1,98 @@
+# Reusable notification: post a clear success or failure summary to Discord.
+# Skips quietly when no webhook is configured, so forks never fail on it.
+name: _notify
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: success, failure, cancelled or rollback
+        required: true
+        type: string
+      title:
+        required: true
+        type: string
+      summary:
+        description: One or two sentences in plain language
+        required: true
+        type: string
+      version:
+        required: false
+        type: string
+        default: ""
+      environment:
+        required: false
+        type: string
+        default: ""
+      link:
+        description: Link to the live app or a related page
+        required: false
+        type: string
+        default: ""
+      fields:
+        description: 'Extra embed fields as JSON, for example [{"name":"Lead time","value":"9m"}]'
+        required: false
+        type: string
+        default: "[]"
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        required: false
+
+permissions: {}
+
+jobs:
+  discord:
+    name: notify discord
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Send embed
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          STATUS: ${{ inputs.status }}
+          TITLE: ${{ inputs.title }}
+          SUMMARY: ${{ inputs.summary }}
+          VERSION: ${{ inputs.version }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          LINK: ${{ inputs.link }}
+          FIELDS: ${{ inputs.fields }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [ -z "${WEBHOOK}" ]; then
+            echo "No DISCORD_WEBHOOK_URL configured, skipping."
+            exit 0
+          fi
+          case "${STATUS}" in
+            success)  color=2278750;  icon="✅" ;;
+            rollback) color=16098851; icon="↩️" ;;
+            cancelled) color=9807270; icon="⏹️" ;;
+            *)        color=14427686; icon="❌" ;;
+          esac
+          payload=$(jq -n \
+            --arg title "${icon} ${TITLE}" --arg desc "${SUMMARY}" --argjson color "${color}" \
+            --arg version "${VERSION}" --arg env "${ENVIRONMENT}" --arg link "${LINK}" \
+            --arg run "${RUN_URL}" --arg commit "${COMMIT:0:7}" --arg commit_url "${COMMIT_URL}" \
+            --arg actor "${ACTOR}" --argjson extra "${FIELDS}" '
+            {
+              username: "Shipyard Pipeline",
+              embeds: [{
+                title: $title,
+                description: $desc,
+                url: $run,
+                color: $color,
+                fields: (
+                  [ (if $env != "" then {name: "Environment", value: $env, inline: true} else empty end),
+                    (if $version != "" then {name: "Version", value: $version, inline: true} else empty end),
+                    {name: "Commit", value: "[\($commit)](\($commit_url))", inline: true},
+                    {name: "Triggered by", value: $actor, inline: true} ]
+                  + $extra
+                  + [ {name: "Links", value: ("[Pipeline run](\($run))" + (if $link != "" then " · [Live app](\($link))" else "" end))} ]
+                ),
+                timestamp: (now | todate)
+              }]
+            }')
+          curl -fsS -X POST -H "Content-Type: application/json" -d "${payload}" "${WEBHOOK}"
+          echo "Notification sent."

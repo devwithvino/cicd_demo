@@ -46,8 +46,16 @@ The spike pushed a tiny multi-arch image to GHCR and drove the Render API from a
 | Does the service preview API work on the free plan? | Yes | `POST /v1/services/{id}/preview` created a free preview with its own `onrender.com` URL. |
 | Can a preview's environment variables be changed after creation? | Yes | `PUT /v1/services/{previewId}/env-vars/{key}` updated the value. |
 | Can a preview be deleted through the API? | Yes | `DELETE /v1/services/{previewId}` returned HTTP 204. |
-| Can free web services reach Key Value? | Pending | Verified in Phase 2 when the Key Value instance is created. |
-| Does blueprint sync overwrite a pipeline deploy? | Pending | Verified in Phase 2 when `render.yaml` is applied. |
+| Can free web services reach Key Value? | Yes | `/readyz` on the free api and worker services returned ready over the internal connection string. A full job round trip passed in production. |
+| Does blueprint sync overwrite a pipeline deploy? | Yes, for changed services | Pushing a `render.yaml` change redeployed the affected service from the tag in the blueprint (trigger `blueprint_sync`). See the mitigation below. |
+
+### Blueprint sync mitigation
+
+A sync redeploys whatever tag `render.yaml` names. If that tag were `main`, an infrastructure change could push an unapproved build into production and bypass the approval gate. So every environment has its own moving tag, `staging` and `production`. The pipeline moves an environment tag only after that environment's smoke test passes, by retagging the verified digest without rebuilding it. `render.yaml` references these environment tags, so a sync can only ever redeploy an image that already passed in that environment.
+
+### Other platform notes
+
+- Render appends a random suffix to a service subdomain when the plain name is taken. The staging API lives at `shipyard-api-staging-e87x.onrender.com`. Service URLs are stored as GitHub environment variables, so workflows never guess them.
 
 ### Notes for the real pipeline
 

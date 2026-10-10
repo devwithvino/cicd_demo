@@ -1,5 +1,8 @@
 # The main delivery path: every merge to main is versioned, built once and
-# promoted by digest through staging and, after approval, production.
+# promoted by digest through staging and, after a human approval, production.
+#
+#   version -> build once -> staging (deploy + smoke) -> approval -> production
+#   (same digests + smoke) -> release (retag, GitHub Release) -> report + notify
 name: deliver
 
 on:
@@ -47,3 +50,164 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
       extra_tags: main
+
+  staging:
+    name: Staging
+    needs: [version, build]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_deploy-render.yml
+    with:
+      environment: staging
+      digests: ${{ needs.build.outputs.digests }}
+      registry: ${{ needs.build.outputs.registry }}
+      version: ${{ needs.version.outputs.version }}
+      git_sha: ${{ github.sha }}
+    secrets: inherit
+
+  # The production environment requires a reviewer, so this job waits for a
+  # human approval. It deploys the identical digests that passed staging.
+  production:
+    name: Production
+    needs: [version, build, staging]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_deploy-render.yml
+    with:
+      environment: production
+      digests: ${{ needs.build.outputs.digests }}
+      registry: ${{ needs.build.outputs.registry }}
+      version: ${{ needs.version.outputs.version }}
+      git_sha: ${{ github.sha }}
+    secrets: inherit
+
+  release:
+    name: Release
+    needs: [version, build, production]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag released digests with the version (no rebuild)
+        env:
+          REGISTRY: ${{ needs.build.outputs.registry }}
+          DIGESTS: ${{ needs.build.outputs.digests }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
+            digest=$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')
+            docker buildx imagetools create \
+              -t "${REGISTRY}-${svc}:${VERSION}" -t "${REGISTRY}-${svc}:latest" \
+              "${REGISTRY}-${svc}@${digest}"
+          done
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY: ${{ needs.build.outputs.registry }}
+          DIGESTS: ${{ needs.build.outputs.digests }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          {
+            echo "## Images"
+            echo ""
+            echo "The exact digests below passed staging and production smoke tests."
+            echo ""
+            echo "| Service | Image |"
+            echo "|---|---|"
+            for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
+              echo "| ${svc} | \`${REGISTRY}-${svc}@$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')\` |"
+            done
+          } > notes.md
+          gh release create "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+            --title "v${VERSION}" --notes-file notes.md --generate-notes
+
+  report:
+    name: Report
+    if: always()
+    needs: [version, build, staging, production, release]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    outputs:
+      status: ${{ steps.report.outputs.status }}
+      summary: ${{ steps.report.outputs.summary }}
+      fields: ${{ steps.report.outputs.fields }}
+    steps:
+      - name: Measure lead time and outcome
+        id: report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          RESULTS: ${{ toJSON(needs) }}
+          COMMIT_TIME: ${{ github.event.head_commit.timestamp }}
+        run: |
+          status=success
+          for job in build staging production release; do
+            result=$(echo "${RESULTS}" | jq -r --arg j "${job}" '.[$j].result')
+            if [ "${result}" != "success" ]; then status=failure; failed="${failed:-${job}}"; fi
+          done
+          if [ "$(echo "${RESULTS}" | jq -r '.production.result')" = "cancelled" ]; then status=cancelled; fi
+
+          jobs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" --jq '.jobs')
+          start=$(date -d "${COMMIT_TIME:-$(echo "${jobs}" | jq -r 'map(.started_at) | min')}" +%s)
+          now=$(date +%s)
+          # Time spent waiting for the human approval is not pipeline time.
+          prod_created=$(echo "${jobs}" | jq -r '[.[] | select(.name | startswith("Production"))][0].created_at // empty')
+          prod_started=$(echo "${jobs}" | jq -r '[.[] | select(.name | startswith("Production"))][0].started_at // empty')
+          wait=0
+          if [ -n "${prod_created}" ] && [ -n "${prod_started}" ]; then
+            wait=$(( $(date -d "${prod_started}" +%s) - $(date -d "${prod_created}" +%s) ))
+          fi
+          lead=$(( now - start - wait ))
+          fmt() { printf '%dm %02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
+
+          if [ "${status}" = "success" ]; then
+            summary="Version ${VERSION} is live in production. Built once, verified in staging, approved, and promoted by digest with no manual steps."
+          elif [ "${status}" = "cancelled" ]; then
+            summary="Version ${VERSION} was not promoted to production. The approval was rejected or the run was cancelled."
+          else
+            summary="Version ${VERSION} did not reach production. The ${failed} stage failed, so nothing unverified was released."
+          fi
+          fields=$(jq -cn --arg lead "$(fmt "${lead}")" --arg wait "$(fmt "${wait}")" \
+            '[{name: "Pipeline time", value: $lead, inline: true}, {name: "Approval wait", value: $wait, inline: true}]')
+          {
+            echo "status=${status}"
+            echo "summary=${summary}"
+            echo "fields=${fields}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Delivery ${status}"
+            echo ""
+            echo "${summary}"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Commit to production, excluding approval wait | $(fmt "${lead}") |"
+            echo "| Time waiting for approval | $(fmt "${wait}") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify:
+    name: Notify
+    if: always()
+    needs: [version, report]
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: ${{ needs.report.outputs.status }}
+      title: "Delivery ${{ needs.report.outputs.status }}: v${{ needs.version.outputs.version }}"
+      summary: ${{ needs.report.outputs.summary }}
+      version: ${{ needs.version.outputs.version }}
+      environment: production
+      link: https://shipyard-web-production.onrender.com
+      fields: ${{ needs.report.outputs.fields }}
+    secrets:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
