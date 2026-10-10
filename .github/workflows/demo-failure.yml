@@ -66,6 +66,20 @@ jobs:
       broken_release: true
       extra_tags: broken-demo
 
+  awaiting-approval:
+    name: Approval notice
+    if: inputs.target == 'production'
+    needs: [version, build]
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: approval
+      title: "Rollback demo is waiting for production approval"
+      summary: "A deliberately broken release (${{ needs.version.outputs.version }}) is about to be deployed to production to demonstrate automatic rollback. A reviewer needs to approve it."
+      version: ${{ needs.version.outputs.version }}
+      environment: production
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
   deploy:
     name: Deploy broken release
     needs: [version, build]
@@ -149,4 +163,4 @@ jobs:
       link: ${{ inputs.target == 'production' && 'https://shipyard-web-production.onrender.com' || 'https://shipyard-web-staging.onrender.com' }}
       fields: ${{ needs.verify.outputs.fields }}
     secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

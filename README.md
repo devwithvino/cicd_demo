@@ -25,6 +25,8 @@ Shipyard is a reference delivery pipeline. A small microservices app travels fro
 | Releases (versioned images and digests) | https://github.com/devwithvino/cicd_demo/releases |
 | Pipeline runs | https://github.com/devwithvino/cicd_demo/actions |
 
+> The hosted platform can be paused and resumed with one click. See the [operations guide](docs/operations.md).
+>
 > The demo runs on free instances that sleep after 15 minutes without traffic. The first visit can take about a minute while the services wake up. The dashboard says so and refreshes on its own.
 
 ## In 60 seconds
@@ -38,7 +40,7 @@ For a business reader, this is what the project shows:
 - **Every proposed change can be tried before it is accepted.** Each pull request gets its own temporary, fully working copy of the app with a link posted on the pull request. It disappears when the pull request closes.
 - **People stay in control.** Staging updates automatically. Production needs one click of approval from a named reviewer.
 - **Bad releases undo themselves.** If a release fails its checks after going live, the pipeline puts the previous version back on its own, confirms it works, and opens an incident report. In the recorded demo, service was restored in 28 seconds.
-- **The team is told what happened.** Every delivery posts a plain language summary to the team chat, with the time it took.
+- **The team is told what happened.** Every delivery posts a plain language summary to Slack with the time it took, and a reviewer is pinged the moment production is waiting for approval.
 - **Performance is measured, not claimed.** A public status page tracks the four industry standard DORA delivery metrics, calculated from every real pipeline run.
 - **It looks after itself.** Dependencies update themselves weekly, safe updates merge on their own after every check passes, and nightly jobs re scan running software for newly published vulnerabilities and test production end to end.
 - **It costs nothing to run.** Everything uses free tiers, and the hosting account has no payment method, so a bill is impossible.
@@ -194,6 +196,7 @@ flowchart TD
     stgsmoke -- fail --> rb1[Automatic rollback<br/>verify, open incident]
     rb1 --> stop1([Stop. Nothing reaches production])
     stgtag --> approval{{Human approval<br/>production environment}}
+    stgtag --> notice["Slack: waiting for approval"]
     kind -- pass --> approval
     approval -- approved --> prd[Deploy the same digests to production]
     approval -- rejected --> stop2([Stop. Production unchanged])
@@ -204,7 +207,7 @@ flowchart TD
     prdsmoke -- fail --> rb2[Automatic rollback<br/>verify, open incident]
     rb2 --> report
     stop1 --> report
-    report --> notify[Discord summary]
+    report --> notify[Slack summary]
 ```
 
 Pull requests run the CI checks below. Merges to `main` run the full delivery flow.
@@ -270,7 +273,7 @@ There are two layers of protection, and each covers a different kind of failure:
 
 ### The deliberate failure demo
 
-[`demo-failure.yml`](.github/workflows/demo-failure.yml) shows the second layer working, on demand. It builds today's code with a deliberate defect (`BROKEN_RELEASE=true`) that breaks job submission but keeps every health check green, so Render is happy to run it. Then it deploys that release to staging, or to production after approval. The smoke test fails at "job accepted", the pipeline rolls back, verifies, opens an incident and posts a red then green summary to Discord.
+[`demo-failure.yml`](.github/workflows/demo-failure.yml) shows the second layer working, on demand. It builds today's code with a deliberate defect (`BROKEN_RELEASE=true`) that breaks job submission but keeps every health check green, so Render is happy to run it. Then it deploys that release to staging, or to production after approval. The smoke test fails at "job accepted", the pipeline rolls back, verifies, opens an incident and posts a red then green summary to Slack.
 
 To run it: **Actions, demo-failure, Run workflow**, choose an environment. The run itself ends red, because the broken release really did fail. The "Verify automatic recovery" job is the one that must be green.
 
@@ -398,7 +401,7 @@ CI lints the chart and validates the rendered manifests against Kubernetes 1.33 
 |---|---|
 | [Dependabot](.github/dependabot.yml) | Weekly updates for Go, Python, npm, Dockerfile base images, compose images and workflow actions. Minor and patch updates are grouped per ecosystem. A seven day cooldown skips brand new releases, a cheap defence against hijacked packages |
 | [Auto merge](.github/workflows/dependabot-automerge.yml) | Patch and minor Dependabot updates merge on their own once every required check passes. Major updates always wait for a human |
-| [Nightly](.github/workflows/nightly.yml) | Re scans the images running in staging and production for newly published CVEs, runs one synthetic production smoke test, and checks every documentation link. Failures open issues and alert Discord |
+| [Nightly](.github/workflows/nightly.yml) | Re scans the images running in staging and production for newly published CVEs, runs one synthetic production smoke test, and checks every documentation link. Failures open issues and alert Slack |
 | [OpenSSF Scorecard](.github/workflows/scorecard.yml) | An independent audit of supply chain practices, published as the badge above |
 | [Preview janitor](.github/workflows/preview-janitor.yml) | Deletes preview environments whose pull request is gone |
 
@@ -446,7 +449,8 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 | [`nightly.yml`](.github/workflows/nightly.yml) | Nightly, manual run | Re scan running images, synthetic production check, link check |
 | [`scorecard.yml`](.github/workflows/scorecard.yml) | Pushes to `main`, weekly | OpenSSF Scorecard |
 | [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Dependabot pull requests | Queues patch and minor updates for auto merge |
-| [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
+| [`platform.yml`](.github/workflows/platform.yml) | Manual run | Brings staging, production or both down (suspend) or up (resume and smoke test), pausing scheduled checks while production is off |
+| [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Slack notification: colored status, summary, version, commit, timings and link buttons, including approval requests |
 | [`_kind-e2e.yml`](.github/workflows/_kind-e2e.yml) | Called by deliver and pr-preview | Same digests on a Kind cluster: verify, helm install, helm test, smoke test, k6 performance gate |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
 
@@ -472,7 +476,7 @@ Pipeline practices applied throughout:
 - Images are public, so Render needs no registry credential.
 - Images are signed and attested through OIDC. There is no signing key to store or rotate.
 - Render does not support OIDC federation, so its API key is stored as an environment secret, scoped per environment.
-- The Discord webhook is a repository secret. Notifications skip quietly when it is absent, so forks never fail.
+- The Slack webhook is a repository secret. Notifications skip quietly when it is absent, so forks never fail.
 
 ---
 
@@ -485,11 +489,15 @@ Pipeline practices applied throughout:
 | GitHub Pages status page | Free for public repositories |
 | Render web services and Key Value | Free instance types |
 | Render build minutes | Not used. Images are built in GitHub Actions |
-| Discord notifications | Free webhooks |
+| Slack notifications | Free incoming webhooks |
 
 Free tiers come with limits: instances sleep after 15 minutes idle, 750 instance hours a month are shared by all services, one free Key Value instance, 5 GB of bandwidth a month, and no free background worker type (so the worker runs as a free web service). Each limit and how the design handles it is documented in [docs/free-tier-limits.md](docs/free-tier-limits.md), together with the results of the platform spike that proved the approach before any code was written.
 
 ---
+
+## Operations
+
+The [operations guide](docs/operations.md) covers pausing and resuming the hosted platform with the `platform` workflow, running locally, permanent teardown and a full rebuild from scratch.
 
 ## Run it locally
 
@@ -564,7 +572,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 ├── .github/workflows/     ci, deliver, demo-failure, rollback, deploy-manual and the reusable _ workflows
 ├── status-site/           Static status page published to GitHub Pages
 ├── docs/
-│   └── free-tier-limits.md
+│   ├── free-tier-limits.md
+│   └── operations.md      Bring the platform down and up, teardown and rebuild
 ├── render.yaml            Render Blueprint: 6 free web services and 1 Key Value
 └── docker-compose.yml     Local stack using the same images
 ```
@@ -577,7 +586,7 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 |---|---|---|
 | 0 | Platform spike: deploy by digest, previews, free tier limits | Done |
 | 1 | Application services, tests, Dockerfiles, local stack | Done |
-| 2 | CI, build once, staging, approval, production, release, Discord | Done |
+| 2 | CI, build once, staging, approval, production, release, team notifications | Done |
 | 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Done |
 | 4 | Status page with live health and DORA metrics on GitHub Pages | Done |
 | 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance, branch protection | Done |

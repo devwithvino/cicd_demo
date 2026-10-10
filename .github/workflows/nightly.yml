@@ -123,7 +123,7 @@ jobs:
       environment: production
       link: https://shipyard-web-production.onrender.com
     secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   links:
     name: documentation link check

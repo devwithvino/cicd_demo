@@ -92,6 +92,21 @@ jobs:
       git_sha: ${{ github.sha }}
       version: ${{ needs.version.outputs.version }}
 
+  # Tell the team the moment production starts waiting for a reviewer.
+  awaiting-approval:
+    name: Approval notice
+    needs: [version, staging, kubernetes]
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: approval
+      title: "v${{ needs.version.outputs.version }} is waiting for production approval"
+      summary: "Built once, verified in staging and on Kubernetes. The identical digests are ready for production. A reviewer needs to approve the production environment."
+      version: ${{ needs.version.outputs.version }}
+      environment: production
+      link: https://shipyard-web-staging.onrender.com
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
   # The production environment requires a reviewer, so this job waits for a
   # human approval. It deploys the identical digests that passed staging and
   # Kubernetes.
@@ -181,8 +196,11 @@ jobs:
           for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
             digest=$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')
             gh attestation download "oci://${REGISTRY}-${svc}@${digest}" --repo "${GITHUB_REPOSITORY}"
-            # The bundle file is named after the digest with ":" replaced by "-".
-            mv "${digest/:/-}.jsonl" "shipyard-${svc}.intoto.jsonl"
+            # The bundle is named after the digest: "sha256:<hex>.jsonl" on Linux,
+            # with ":" replaced by "-" on Windows. Accept either.
+            src="${digest}.jsonl"
+            [ -f "${src}" ] || src="${digest/:/-}.jsonl"
+            mv "${src}" "shipyard-${svc}.intoto.jsonl"
           done
           ls -l
 
@@ -315,4 +333,4 @@ jobs:
       link: https://shipyard-web-production.onrender.com
       fields: ${{ needs.report.outputs.fields }}
     secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

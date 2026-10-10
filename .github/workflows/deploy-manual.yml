@@ -32,6 +32,20 @@ jobs:
       environment: ${{ inputs.environment }}
       version: ${{ inputs.version }}
 
+  awaiting-approval:
+    name: Approval notice
+    if: ${{ inputs.environment == 'production' && !inputs.dry_run }}
+    needs: resolve
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: approval
+      title: "Manual deploy to production is waiting for approval"
+      summary: "${{ github.actor }} asked to move production from ${{ needs.resolve.outputs.current_version }} to ${{ needs.resolve.outputs.version }}. A reviewer needs to approve the production environment."
+      version: ${{ needs.resolve.outputs.version }}
+      environment: production
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
   deploy:
     name: Deploy
     if: ${{ !inputs.dry_run }}
@@ -64,4 +78,4 @@ jobs:
       environment: ${{ inputs.environment }}
       link: ${{ needs.deploy.outputs.web_url }}
     secrets:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

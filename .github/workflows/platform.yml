@@ -1,0 +1,170 @@
+# Bring the hosted platform down or up on demand.
+#
+#   down  suspends the api, worker and web services of the chosen environments.
+#         Configuration, images and data settings are kept. When production is
+#         included, scheduled checks that would raise false alarms are paused.
+#         When both environments go down, the shared Key Value instance is
+#         suspended too, after the services.
+#   up    resumes the shared Key Value first (if both), then the services,
+#         runs the smoke test and re enables the scheduled checks.
+#
+# Production keeps its approval gate: its Render key is only released after a
+# reviewer approves, so nobody can switch production off by accident.
+name: platform
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Bring the platform down or up
+        type: choice
+        options: [down, up]
+        required: true
+      scope:
+        description: Which environments
+        type: choice
+        options: [staging, production, both]
+        default: both
+
+permissions: {}
+
+concurrency:
+  group: platform
+  cancel-in-progress: false
+
+env:
+  ACTION: ${{ inputs.action }}
+  SCOPE: ${{ inputs.scope }}
+
+jobs:
+  targets:
+    name: Plan
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      environments: ${{ steps.plan.outputs.environments }}
+    steps:
+      - id: plan
+        run: |
+          case "${SCOPE}" in
+            both) envs='["staging","production"]' ;;
+            *)    envs="[\"${SCOPE}\"]" ;;
+          esac
+          echo "environments=${envs}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Platform ${ACTION}: ${SCOPE}"
+            echo ""
+            if [ "${SCOPE}" = "both" ]; then echo "The shared Key Value instance is included."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  keyvalue-up:
+    name: Resume Key Value
+    needs: targets
+    if: inputs.action == 'up' && inputs.scope == 'both'
+    runs-on: ubuntu-24.04
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - name: Resume the shared Key Value
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          KV_ID: ${{ vars.RENDER_KV_ID }}
+        run: python3 scripts/render_deploy.py resume --kv "${KV_ID}"
+
+  services:
+    name: ${{ inputs.action }} ${{ matrix.environment }}
+    needs: [targets, keyvalue-up]
+    if: always() && needs.targets.result == 'success' && needs.keyvalue-up.result != 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.targets.outputs.environments) }}
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ vars.WEB_URL }}
+    permissions:
+      contents: read
+    env:
+      SERVICES: api=${{ vars.RENDER_API_SERVICE_ID }},worker=${{ vars.RENDER_WORKER_SERVICE_ID }},web=${{ vars.RENDER_WEB_SERVICE_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Suspend or resume the services
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          command=$([ "${ACTION}" = "down" ] && echo suspend || echo resume)
+          python3 scripts/render_deploy.py "${command}" --services "${SERVICES}"
+
+      - name: Smoke test after bringing it up
+        if: inputs.action == 'up'
+        env:
+          WEB_URL: ${{ vars.WEB_URL }}
+          API_URL: ${{ vars.API_URL }}
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          python3 scripts/smoke_test.py --web "${WEB_URL}" --api "${API_URL}" --worker "${WORKER_URL}" \
+            --title "Smoke test after platform up: ${ENVIRONMENT}" --summary "$GITHUB_STEP_SUMMARY"
+
+  keyvalue-down:
+    name: Suspend Key Value
+    needs: services
+    if: inputs.action == 'down' && inputs.scope == 'both' && needs.services.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - name: Suspend the shared Key Value
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          KV_ID: ${{ vars.RENDER_KV_ID }}
+        run: python3 scripts/render_deploy.py suspend --kv "${KV_ID}"
+
+  scheduled-checks:
+    name: Pause or resume scheduled checks
+    needs: services
+    if: always() && needs.services.result == 'success' && inputs.scope != 'staging'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Toggle checks that would alert while production is down
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verb=$([ "${ACTION}" = "down" ] && echo disable || echo enable)
+          for wf in nightly.yml sentry-slack.yml; do
+            if gh workflow view "${wf}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+              gh workflow "${verb}" "${wf}" --repo "${GITHUB_REPOSITORY}"
+              echo "${verb}d ${wf}" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+  notify:
+    name: Notify
+    needs: [services, keyvalue-down, scheduled-checks]
+    if: always() && needs.services.result != 'skipped'
+    uses: ./.github/workflows/_notify.yml
+    with:
+      status: ${{ needs.services.result == 'success' && 'success' || 'failure' }}
+      title: "Platform ${{ inputs.action }}: ${{ inputs.scope }} ${{ needs.services.result == 'success' && 'done' || 'needs attention' }}"
+      summary: ${{ inputs.action == 'down' && format('{0} suspended the {1} environment(s). Configuration and images are kept, and scheduled checks are paused while production is off.', github.actor, inputs.scope) || format('{0} resumed the {1} environment(s). Services are back, the smoke test passed and scheduled checks are running again.', github.actor, inputs.scope) }}
+      environment: ${{ inputs.scope }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
