@@ -33,7 +33,9 @@ from typing import Any
 
 API = "https://api.render.com/v1"
 POLL_SECONDS = 10
-TIMEOUT_SECONDS = 600
+# Free instances occasionally take more than ten minutes to go live (seen
+# 12.5 minutes on 2026-10-10), so the wait is generous.
+TIMEOUT_SECONDS = 1200
 FAILED = {"build_failed", "update_failed", "pre_deploy_failed", "canceled", "deactivated"}
 
 
@@ -93,6 +95,14 @@ def deploy_one(name: str, service_id: str, image_ref: str, extra_env: dict[str, 
     for key, value in (extra_env or {}).items():
         request("PUT", f"/services/{service_id}/env-vars/{key}", {"value": value})
     deploy = request("POST", f"/services/{service_id}/deploys", {"imageUrl": image_ref})
+    if not deploy or "id" not in deploy:
+        # When another deploy is still in progress Render queues this one and
+        # may answer without a body. The newest deploy is the one just queued.
+        latest = request("GET", f"/services/{service_id}/deploys?limit=1") or []
+        deploy = latest[0].get("deploy", latest[0]) if latest else None
+        if not deploy or "id" not in deploy:
+            raise RenderError(f"{name}: Render accepted the deploy but returned no deploy to follow")
+        log(f"{name}: deploy queued behind one already in progress")
     deploy_id = deploy["id"]
     log(f"{name}: deploy {deploy_id} started for {short(image_ref)}")
 
