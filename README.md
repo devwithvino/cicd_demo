@@ -316,6 +316,18 @@ Hardening the gates surfaced real findings, which were fixed rather than ignored
 
 [`ci.yml`](.github/workflows/ci.yml) adds hadolint for Dockerfiles, actionlint for workflow correctness and zizmor for workflow security. [`pr-title.yml`](.github/workflows/pr-title.yml) requires Conventional Commit titles, because titles drive semantic versioning.
 
+GitHub's own secret scanning with **push protection**, the dependency graph and Dependabot alerts are also enabled, so known credential formats are stopped before a commit even lands.
+
+### Branch protection
+
+`main` only changes through pull requests. A ruleset requires three checks to pass before a squash merge: **CI passed**, **Security passed** and **conventional commit title**. Force pushes and branch deletion are blocked, and there are no bypass actors.
+
+[Pull request #2](https://github.com/devwithvino/cicd_demo/pull/2) proves it. It deliberately added a hard coded API token, lodash 4.17.20 and a non conventional title. Gitleaks caught the token, dependency review caught two HIGH lodash advisories, and the title check failed. GitHub marked it blocked, and it was closed without merging.
+
+### A real incident, handled by the pipeline
+
+During the build of this project a GitHub App private key file was saved in the working folder and committed by mistake. The new gitleaks gate flagged it on the first scan, about two minutes after the push. The key was deleted and replaced, the file removed, key patterns added to `.gitignore`, and the finding recorded with its resolution in [`.gitleaksignore`](.gitleaksignore). This is exactly the failure the gate exists for, and it is why scanning runs on every push and nightly over the full history.
+
 ### Protecting production from infrastructure syncs
 
 Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If the Blueprint pointed at `main`, an infrastructure edit could push an unapproved build into production. Instead, each environment has its own moving tag that only advances after that environment's smoke test passes. A Blueprint sync can therefore only redeploy an image that already passed in that environment.
@@ -466,8 +478,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 2 | CI, build once, staging, approval, production, release, Discord | Done |
 | 3 | Automatic rollback, deliberate failure demo, manual deploy and rollback workflows, incident issues | Done |
 | 4 | Status page with live health and DORA metrics on GitHub Pages | Done |
-| 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance | In progress: gates live, pull request blocking demo next |
-| 6 | Pull request preview environments on Render | Planned |
+| 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance, branch protection | Done |
+| 6 | Pull request preview environments on Render | Next |
 | 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Planned |
 | 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Planned |
 | 9 | Case study, runbook, demo script and services overview | Planned |
