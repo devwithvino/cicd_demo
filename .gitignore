@@ -43,3 +43,12 @@ sbom*.json
 trivy-*.json
 *.sarif
 status-site/data/
+
+# Keys and credentials must never be committed
+*.pem
+*.key
+*.p12
+*.pfx
+*private-key*
+id_rsa*
+id_ed25519*
