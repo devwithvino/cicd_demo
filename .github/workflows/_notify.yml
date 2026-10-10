@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: ""
+      link_label:
+        description: Button text for the link
+        required: false
+        type: string
+        default: Live app
       fields:
         description: 'Extra fields as JSON, for example [{"name":"Lead time","value":"9m"}]'
         required: false
@@ -57,6 +62,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           ENVIRONMENT: ${{ inputs.environment }}
           LINK: ${{ inputs.link }}
+          LINK_LABEL: ${{ inputs.link_label }}
           FIELDS: ${{ inputs.fields }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT: ${{ github.sha }}
@@ -77,7 +83,7 @@ jobs:
           esac
           payload=$(jq -n \
             --arg title "${icon} ${TITLE}" --arg summary "${SUMMARY}" --arg color "${color}" \
-            --arg version "${VERSION}" --arg env "${ENVIRONMENT}" --arg link "${LINK}" \
+            --arg version "${VERSION}" --arg env "${ENVIRONMENT}" --arg link "${LINK}" --arg link_label "${LINK_LABEL}" \
             --arg run "${RUN_URL}" --arg run_label "${run_label}" --arg commit "${COMMIT:0:7}" \
             --arg commit_url "${COMMIT_URL}" --arg actor "${ACTOR}" --arg repo "${REPO}" \
             --argjson extra "${FIELDS}" '
@@ -99,7 +105,7 @@ jobs:
                     ) | .[0:10])},
                     {type: "actions", elements: (
                       [ {type: "button", text: {type: "plain_text", text: $run_label}, url: $run, style: "primary"} ]
-                      + (if $link != "" then [ {type: "button", text: {type: "plain_text", text: "Live app"}, url: $link} ] else [] end)
+                      + (if $link != "" then [ {type: "button", text: {type: "plain_text", text: $link_label}, url: $link} ] else [] end)
                     )},
                     {type: "context", elements: [ {type: "mrkdwn", text: "Shipyard pipeline · \($repo)"} ]}
                   ]

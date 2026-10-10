@@ -97,6 +97,7 @@ jobs:
       git_sha: ${{ github.sha }}
     secrets:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   verify:
     name: Verify automatic recovery
