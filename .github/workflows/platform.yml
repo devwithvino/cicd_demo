@@ -54,7 +54,7 @@ jobs:
           {
             echo "### Platform ${ACTION}: ${SCOPE}"
             echo ""
-            [ "${SCOPE}" = "both" ] && echo "The shared Key Value instance is included."
+            if [ "${SCOPE}" = "both" ]; then echo "The shared Key Value instance is included."; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   keyvalue-up:
