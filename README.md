@@ -8,6 +8,7 @@
 [![release](https://img.shields.io/github/v/release/devwithvino/cicd_demo?label=release)](https://github.com/devwithvino/cicd_demo/releases)
 [![security](https://github.com/devwithvino/cicd_demo/actions/workflows/security.yml/badge.svg)](https://github.com/devwithvino/cicd_demo/actions/workflows/security.yml)
 [![signed](https://img.shields.io/badge/images-signed%20%2B%20SLSA%20provenance-blueviolet)](#supply-chain-security)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/devwithvino/cicd_demo/badge)](https://scorecard.dev/viewer/?uri=github.com/devwithvino/cicd_demo)
 [![images](https://img.shields.io/badge/images-amd64%20%7C%20arm64-blue)](https://github.com/devwithvino?tab=packages&repo_name=cicd_demo)
 [![cost](https://img.shields.io/badge/monthly%20cost-%240-brightgreen)](docs/free-tier-limits.md)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -39,6 +40,7 @@ For a business reader, this is what the project shows:
 - **Bad releases undo themselves.** If a release fails its checks after going live, the pipeline puts the previous version back on its own, confirms it works, and opens an incident report. In the recorded demo, service was restored in 28 seconds.
 - **The team is told what happened.** Every delivery posts a plain language summary to the team chat, with the time it took.
 - **Performance is measured, not claimed.** A public status page tracks the four industry standard DORA delivery metrics, calculated from every real pipeline run.
+- **It looks after itself.** Dependencies update themselves weekly, safe updates merge on their own after every check passes, and nightly jobs re scan running software for newly published vulnerabilities and test production end to end.
 - **It costs nothing to run.** Everything uses free tiers, and the hosting account has no payment method, so a bill is impossible.
 
 ### Measured on a real run
@@ -390,6 +392,20 @@ helm install shipyard deploy/helm/shipyard \
 
 CI lints the chart and validates the rendered manifests against Kubernetes 1.33 schemas with kubeconform.
 
+### Housekeeping that runs itself
+
+| Automation | What it does |
+|---|---|
+| [Dependabot](.github/dependabot.yml) | Weekly updates for Go, Python, npm, Dockerfile base images, compose images and workflow actions. Minor and patch updates are grouped per ecosystem. A seven day cooldown skips brand new releases, a cheap defence against hijacked packages |
+| [Auto merge](.github/workflows/dependabot-automerge.yml) | Patch and minor Dependabot updates merge on their own once every required check passes. Major updates always wait for a human |
+| [Nightly](.github/workflows/nightly.yml) | Re scans the images running in staging and production for newly published CVEs, runs one synthetic production smoke test, and checks every documentation link. Failures open issues and alert Discord |
+| [OpenSSF Scorecard](.github/workflows/scorecard.yml) | An independent audit of supply chain practices, published as the badge above |
+| [Preview janitor](.github/workflows/preview-janitor.yml) | Deletes preview environments whose pull request is gone |
+
+The policy is enforced by humans too. Dependabot's first run proposed three major upgrades: Node 25 (not an LTS release), Node type definitions 26 (would not match the Node 24 runtime) and Valkey 9 (would break parity with Render's managed Valkey 8). All three were declined with a reason, and the reasoning now lives as ignore rules in the Dependabot config.
+
+Scorecard started at 5.6. Real fixes followed rather than cosmetic ones: a [security policy](SECURITY.md) with private vulnerability reporting, Go fuzz tests for the code that handles untrusted input, base images pinned by digest, and releases that carry their Sigstore provenance bundles. A few checks can not improve for a young single maintainer project, such as reviews by a second person and project age.
+
 ### Protecting production from infrastructure syncs
 
 Render redeploys a service whenever its Blueprint (`render.yaml`) changes. If the Blueprint pointed at `main`, an infrastructure edit could push an unapproved build into production. Instead, each environment has its own moving tag that only advances after that environment's smoke test passes. A Blueprint sync can therefore only redeploy an image that already passed in that environment.
@@ -427,6 +443,9 @@ The [status page](https://devwithvino.github.io/cicd_demo/) is the one page to s
 | [`pr-title.yml`](.github/workflows/pr-title.yml) | Pull requests | Conventional Commit title check |
 | [`pr-preview.yml`](.github/workflows/pr-preview.yml) | Pull requests (opened, updated, closed) | Builds, verifies, deploys and smoke tests a preview environment, comments the links, deletes it on close |
 | [`preview-janitor.yml`](.github/workflows/preview-janitor.yml) | Nightly, manual run | Deletes previews whose pull request is no longer open |
+| [`nightly.yml`](.github/workflows/nightly.yml) | Nightly, manual run | Re scan running images, synthetic production check, link check |
+| [`scorecard.yml`](.github/workflows/scorecard.yml) | Pushes to `main`, weekly | OpenSSF Scorecard |
+| [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Dependabot pull requests | Queues patch and minor updates for auto merge |
 | [`_notify.yml`](.github/workflows/_notify.yml) | Called by other workflows | Reusable Discord notification with status color, version, commit, timings and links |
 | [`_kind-e2e.yml`](.github/workflows/_kind-e2e.yml) | Called by deliver and pr-preview | Same digests on a Kind cluster: verify, helm install, helm test, smoke test, k6 performance gate |
 | [`_resolve-release.yml`](.github/workflows/_resolve-release.yml) | Called by other workflows | Turns a version, or "previous", into the released digests and commit |
@@ -446,7 +465,6 @@ Pipeline practices applied throughout:
 | `staging` | Automatic | Render API key (secret), service IDs and URLs (variables) |
 | `production` | Required reviewer, `main` branch only | Its own Render API key, released to a job only after approval |
 | `preview` | Automatic | Render API key (secret) and the staging service IDs that previews are created from (variables) |
-| `infra` | Required reviewer, `main` branch only | Reserved for infrastructure as code |
 
 - Images are pushed with the short lived `GITHUB_TOKEN`. There is no personal access token anywhere.
 - The status page is published through OIDC (`id-token: write`), with no stored deploy token.
@@ -565,8 +583,8 @@ python scripts/smoke_test.py --web http://localhost:8080 --api http://localhost:
 | 5 | Security gates: secret scanning, CodeQL, dependency review, image scanning, SBOM, signing and provenance, branch protection | Done |
 | 6 | Pull request preview environments on Render | Done |
 | 7 | Same images on Kubernetes (Kind in Actions, Helm), performance smoke test, local Grafana | Done |
-| 8 | Terraform for GitHub settings, Dependabot, nightly checks, OpenSSF Scorecard | Next |
-| 9 | Case study, runbook, demo script and services overview | Planned |
+| 8 | Dependabot with safe auto merge, nightly checks, OpenSSF Scorecard hardening | Done |
+| 9 | Case study, runbook, demo script and services overview | Next |
 
 ## License
 
