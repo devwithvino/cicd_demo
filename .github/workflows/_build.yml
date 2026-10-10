@@ -1,0 +1,208 @@
+# Reusable build: every service is built exactly once per change, for amd64
+# and arm64 on native runners (no emulation), pushed to GHCR by digest and
+# merged into one multi-arch image. Callers receive the digests and promote
+# those exact digests through every environment.
+name: _build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Semantic version baked into the images, for example 1.4.0
+        required: true
+        type: string
+      git_sha:
+        description: Commit SHA baked into the images (defaults to the triggering commit)
+        required: false
+        type: string
+        default: ""
+      extra_tags:
+        description: Additional image tags, one per line
+        required: false
+        type: string
+        default: ""
+      broken_release:
+        description: Build the deliberately broken variant used by the rollback demo
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      digests:
+        description: 'JSON map of service to image digest, for example {"api":"sha256:..."}'
+        value: ${{ jobs.collect.outputs.digests }}
+      registry:
+        description: Image name prefix, for example ghcr.io/owner/shipyard
+        value: ${{ jobs.collect.outputs.registry }}
+
+permissions: {}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: build ${{ matrix.service }} (${{ matrix.platform.arch }})
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        service: [api, worker, web]
+        platform:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare build metadata
+        id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+          INPUT_SHA: ${{ inputs.git_sha }}
+        run: |
+          {
+            echo "image=${REGISTRY}/${OWNER,,}/shipyard-${{ matrix.service }}"
+            echo "sha=${INPUT_SHA:-$GITHUB_SHA}"
+            echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: services/${{ matrix.service }}
+          platforms: linux/${{ matrix.platform.arch }}
+          build-args: |
+            VERSION=${{ inputs.version }}
+            GIT_SHA=${{ steps.meta.outputs.sha }}
+            BUILD_TIME=${{ steps.meta.outputs.time }}
+            BROKEN_RELEASE=${{ inputs.broken_release }}
+          outputs: type=image,name=${{ steps.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,scope=${{ matrix.service }}-${{ matrix.platform.arch }},mode=max
+          provenance: false
+
+      - name: Save digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.service }}-${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: publish ${{ matrix.service }}
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [api, worker, web]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/digests
+          pattern: digest-${{ matrix.service }}-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch image and tags
+        id: merge
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.git_sha }}
+          EXTRA_TAGS: ${{ inputs.extra_tags }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          image="${REGISTRY}/${OWNER,,}/shipyard-${{ matrix.service }}"
+          sha="${INPUT_SHA:-$GITHUB_SHA}"
+          tags=(-t "${image}:sha-${sha:0:7}" -t "${image}:${VERSION}-rc.${RUN_NUMBER}")
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] && tags+=(-t "${image}:${tag}")
+          done <<< "${EXTRA_TAGS}"
+
+          sources=()
+          for file in /tmp/digests/*; do
+            sources+=("${image}@sha256:$(basename "${file}")")
+          done
+
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          digest=$(docker buildx imagetools inspect "${image}:sha-${sha:0:7}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "Published ${image}@${digest}"
+
+          mkdir -p /tmp/index
+          echo "${digest}" > "/tmp/index/${{ matrix.service }}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: index-${{ matrix.service }}
+          path: /tmp/index/${{ matrix.service }}
+          if-no-files-found: error
+          retention-days: 7
+
+  collect:
+    name: collect digests
+    needs: merge
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      digests: ${{ steps.collect.outputs.digests }}
+      registry: ${{ steps.collect.outputs.registry }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/index
+          pattern: index-*
+          merge-multiple: true
+
+      - name: Build digest map and summary
+        id: collect
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          registry="${REGISTRY}/${OWNER,,}/shipyard"
+          json=$(for f in /tmp/index/*; do jq -n --arg k "$(basename "$f")" --arg v "$(cat "$f")" '{($k): $v}'; done | jq -cs add)
+          echo "digests=${json}" >> "$GITHUB_OUTPUT"
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Built once: version ${VERSION}"
+            echo ""
+            echo "These exact digests are promoted to every environment. Nothing is rebuilt."
+            echo ""
+            echo "| Service | Image | Digest | Platforms |"
+            echo "|---|---|---|---|"
+            for svc in $(echo "${json}" | jq -r 'keys[]'); do
+              digest=$(echo "${json}" | jq -r --arg s "${svc}" '.[$s]')
+              echo "| ${svc} | \`${registry}-${svc}\` | \`${digest:0:19}\` | amd64, arm64 |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,49 @@
+# The main delivery path: every merge to main is versioned, built once and
+# promoted by digest through staging and, after approval, production.
+name: deliver
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "LICENSE"
+  workflow_dispatch:
+
+permissions: {}
+
+# One delivery at a time. A running delivery is never cancelled midway.
+concurrency:
+  group: deliver
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Calculate version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        run: |
+          version=$(python3 scripts/next_version.py)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "### Release version: ${version}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build once
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      extra_tags: main
