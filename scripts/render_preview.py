@@ -99,6 +99,8 @@ def cmd_up(args: argparse.Namespace) -> int:
     for svc, preview in previews.items():
         env = env_vars(bases[svc])
         env.update({"APP_ENV": f"pr-{args.pr}", "KEY_PREFIX": f"pr-{args.pr}:", "IMAGE_REF": refs[svc]})
+        # Previews never report to Sentry, so they can not use up the quota.
+        env.pop("SENTRY_DSN", None)
         env.update(wiring.get(svc, {}))
         request("PUT", f"/services/{preview['id']}/env-vars", [{"key": k, "value": v} for k, v in env.items()])
         log(f"{svc}: configured {len(env)} environment variables")

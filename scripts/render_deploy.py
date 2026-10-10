@@ -82,11 +82,14 @@ def live_image(service_id: str) -> str | None:
     return str(path) if path else None
 
 
-def deploy_one(name: str, service_id: str, image_ref: str) -> dict[str, Any]:
+def deploy_one(name: str, service_id: str, image_ref: str, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     """Deploy one image reference and block until it is live or has failed."""
     started = time.time()
     # Expose the exact image to the app so the dashboard can show it.
     request("PUT", f"/services/{service_id}/env-vars/IMAGE_REF", {"value": image_ref})
+    # Runtime settings that belong to the environment, such as SENTRY_DSN.
+    for key, value in (extra_env or {}).items():
+        request("PUT", f"/services/{service_id}/env-vars/{key}", {"value": value})
     deploy = request("POST", f"/services/{service_id}/deploys", {"imageUrl": image_ref})
     deploy_id = deploy["id"]
     log(f"{name}: deploy {deploy_id} started for {short(image_ref)}")
@@ -111,10 +114,12 @@ def parse_services(value: str) -> dict[str, str]:
     return {name.strip(): sid.strip() for name, sid in pairs}
 
 
-def run_parallel(targets: dict[str, tuple[str, str]]) -> dict[str, dict[str, Any]]:
+def run_parallel(
+    targets: dict[str, tuple[str, str]], extra_env: dict[str, str] | None = None
+) -> dict[str, dict[str, Any]]:
     """targets maps service name to (service id, image ref)."""
     with ThreadPoolExecutor(max_workers=len(targets) or 1) as pool:
-        futures = {name: pool.submit(deploy_one, name, sid, ref) for name, (sid, ref) in targets.items()}
+        futures = {name: pool.submit(deploy_one, name, sid, ref, extra_env) for name, (sid, ref) in targets.items()}
         results: dict[str, dict[str, Any]] = {}
         for name, future in futures.items():
             try:
@@ -141,7 +146,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         log(f"{name}: currently running {short(state['services'][name]['previousRef'])}")
 
     started = time.time()
-    for name, result in run_parallel(targets).items():
+    extra_env = dict(pair.split("=", 1) for pair in args.env if "=" in pair and pair.split("=", 1)[1])
+    for name, result in run_parallel(targets, extra_env).items():
         state["services"][name].update(result)
     state["seconds"] = round(time.time() - started)
     state["ok"] = all(s["status"] == "live" for s in state["services"].values())
@@ -200,6 +206,7 @@ def main() -> int:
     deploy.add_argument("--registry", required=True, help="image prefix, for example ghcr.io/owner/shipyard")
     deploy.add_argument("--digests", required=True, help="JSON map of service name to digest")
     deploy.add_argument("--state", required=True, help="where to write the deploy record")
+    deploy.add_argument("--env", action="append", default=[], help="KEY=VALUE to set before deploying, repeatable")
 
     rollback = sub.add_parser("rollback")
     rollback.add_argument("--state", required=True, help="deploy record written by the deploy command")
