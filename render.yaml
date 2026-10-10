@@ -66,7 +66,8 @@ services:
     healthCheckPath: /healthz
     envVars:
       - { key: APP_ENV, value: staging }
-      - { key: API_URL, value: https://shipyard-api-staging.onrender.com }
+      # Render added a suffix because the plain subdomain was already taken.
+      - { key: API_URL, value: https://shipyard-api-staging-e87x.onrender.com }
       - { key: REPO_URL, value: https://github.com/devwithvino/cicd_demo }
       - { key: STATUS_PAGE_URL, value: https://devwithvino.github.io/cicd_demo }
 
