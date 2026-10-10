@@ -1,0 +1,111 @@
+# Phase 0 spike: verify Render API behaviour the real pipeline depends on.
+# 1. Deploy an image-backed service by digest.
+# 2. Create a service preview, change its env vars, then delete it.
+# This workflow is deleted after the spike.
+name: spike-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_id:
+        description: Render service ID of the spike service (srv-...)
+        required: true
+      test_preview:
+        description: Also test the service preview API
+        type: boolean
+        default: true
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/shipyard-hello
+  API: https://api.render.com/v1
+
+jobs:
+  deploy-by-digest:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Resolve digest of the spike tag
+        id: digest
+        run: |
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:${IMAGE#ghcr.io/}:pull" | jq -r .token)
+          digest=$(curl -fsS -o /dev/null -D - \
+            -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            "https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/spike" \
+            | awk 'tolower($1)=="docker-content-digest:" {print $2}' | tr -d '\r')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${IMAGE}@${digest}"
+
+      - name: Deploy by digest
+        id: deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ inputs.service_id }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          body=$(jq -n --arg url "${IMAGE}@${DIGEST}" '{imageUrl: $url}')
+          resp=$(curl -sS -w '\n%{http_code}' -X POST "${API}/services/${SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" -H "Content-Type: application/json" -d "${body}")
+          code=$(echo "${resp}" | tail -n1)
+          echo "${resp}" | sed '$d' | jq . || true
+          if [ "${code}" -ge 300 ]; then echo "::error::Deploy request failed with HTTP ${code}"; exit 1; fi
+          echo "deploy_id=$(echo "${resp}" | sed '$d' | jq -r .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait until live
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ inputs.service_id }}
+          DEPLOY_ID: ${{ steps.deploy.outputs.deploy_id }}
+        run: |
+          for _ in $(seq 1 60); do
+            status=$(curl -fsS "${API}/services/${SERVICE_ID}/deploys/${DEPLOY_ID}" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" | jq -r .status)
+            echo "status: ${status}"
+            case "${status}" in
+              live) exit 0 ;;
+              *failed|canceled|deactivated) echo "::error::Deploy ended as ${status}"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::Timed out waiting for deploy"; exit 1
+
+      - name: Check the running version
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ inputs.service_id }}
+          DEPLOY_ID: ${{ steps.deploy.outputs.deploy_id }}
+        run: |
+          url=$(curl -fsS "${API}/services/${SERVICE_ID}" -H "Authorization: Bearer ${RENDER_API_KEY}" | jq -r .serviceDetails.url)
+          echo "Service URL: ${url}"
+          curl -fsS --retry 10 --retry-delay 10 --retry-all-errors "${url}/version"
+          echo "Deploy record image details:"
+          curl -fsS "${API}/services/${SERVICE_ID}/deploys/${DEPLOY_ID}" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" | jq '.image'
+
+      - name: Test service preview API
+        if: ${{ inputs.test_preview }}
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ inputs.service_id }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          auth=(-H "Authorization: Bearer ${RENDER_API_KEY}" -H "Content-Type: application/json")
+          body=$(jq -n --arg p "${IMAGE}@${DIGEST}" '{imagePath: $p, name: "shipyard-hello-spike-preview", plan: "free"}')
+          resp=$(curl -sS -w '\n%{http_code}' -X POST "${API}/services/${SERVICE_ID}/preview" "${auth[@]}" -d "${body}")
+          code=$(echo "${resp}" | tail -n1)
+          echo "${resp}" | sed '$d' | jq . || true
+          if [ "${code}" -ge 300 ]; then echo "::error::Preview create failed with HTTP ${code}"; exit 1; fi
+          preview_id=$(echo "${resp}" | sed '$d' | jq -r .service.id)
+          echo "Preview service: ${preview_id}"
+
+          echo "Setting env var on the preview"
+          curl -fsS -X PUT "${API}/services/${preview_id}/env-vars/KEY_PREFIX" "${auth[@]}" \
+            -d '{"value":"pr-0:"}' | jq .
+          curl -fsS "${API}/services/${preview_id}/env-vars" "${auth[@]}" | jq .
+
+          echo "Deleting the preview"
+          curl -fsS -o /dev/null -w "delete HTTP %{http_code}\n" -X DELETE "${API}/services/${preview_id}" "${auth[@]}"
