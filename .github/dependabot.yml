@@ -3,8 +3,8 @@
 #
 # - Minor and patch updates are grouped into one pull request per ecosystem
 #   to keep the noise low. Major updates arrive on their own for review.
-# - A cooldown skips releases younger than a few days, a cheap defence
-#   against compromised packages, which are usually caught within days.
+# - A seven day cooldown skips brand new releases, a cheap defence
+#   against compromised packages, which are usually caught within a week.
 # - Commit messages follow Conventional Commits, so the PR title check passes
 #   and versioning stays correct.
 # Patch and minor updates merge on their own once every check passes
@@ -15,7 +15,7 @@ updates:
   - package-ecosystem: gomod
     directory: /services/api
     schedule: { interval: weekly, day: monday, time: "06:00" }
-    cooldown: { default-days: 3 }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
     groups:
@@ -25,7 +25,7 @@ updates:
   - package-ecosystem: uv
     directory: /services/worker
     schedule: { interval: weekly, day: monday, time: "06:00" }
-    cooldown: { default-days: 3 }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
     groups:
@@ -35,7 +35,7 @@ updates:
   - package-ecosystem: npm
     directory: /services/web
     schedule: { interval: weekly, day: monday, time: "06:00" }
-    cooldown: { default-days: 3 }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
     groups:
@@ -49,7 +49,7 @@ updates:
   - package-ecosystem: docker
     directories: [/services/api, /services/worker, /services/web]
     schedule: { interval: weekly, day: monday, time: "06:00" }
-    cooldown: { default-days: 3 }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
     groups:
@@ -59,7 +59,7 @@ updates:
   - package-ecosystem: docker-compose
     directory: /
     schedule: { interval: weekly, day: monday, time: "06:00" }
-    cooldown: { default-days: 3 }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
     groups:
@@ -69,7 +69,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday, time: "06:00" }
-    cooldown: { default-days: 3 }
+    cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
     groups:
