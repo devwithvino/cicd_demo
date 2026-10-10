@@ -53,6 +53,8 @@ The spike pushed a tiny multi-arch image to GHCR and drove the Render API from a
 
 A sync redeploys whatever tag `render.yaml` names. If that tag were `main`, an infrastructure change could push an unapproved build into production and bypass the approval gate. So every environment has its own moving tag, `staging` and `production`. The pipeline moves an environment tag only after that environment's smoke test passes, by retagging the verified digest without rebuilding it. `render.yaml` references these environment tags, so a sync can only ever redeploy an image that already passed in that environment.
 
+Verified on 2026-10-10: commit `acf7676` changed `render.yaml` while a newer build (0.1.1) was waiting for production approval. The resulting Blueprint sync redeployed production from the `production` tag, which resolved to the already approved image (`sha256:2b44c728...`, commit `82bd16f`). The unapproved 0.1.1 build stayed out of production until the approval.
+
 ### Other platform notes
 
 - Render appends a random suffix to a service subdomain when the plain name is taken. The staging API lives at `shipyard-api-staging-e87x.onrender.com`. Service URLs are stored as GitHub environment variables, so workflows never guess them.
