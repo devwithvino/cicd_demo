@@ -1,0 +1,51 @@
+# Shipyard Helm values. The same signed images that run on Render run here.
+# Pin images by digest for real deployments:
+#   helm install shipyard deploy/helm/shipyard \
+#     --set images.api.digest=sha256:... --set images.worker.digest=sha256:... --set images.web.digest=sha256:...
+
+environment: kubernetes
+repoUrl: https://github.com/devwithvino/cicd_demo
+
+image:
+  registry: ghcr.io/devwithvino/shipyard
+  # Used only when a service has no digest set.
+  tag: latest
+  pullPolicy: IfNotPresent
+
+images:
+  api:
+    digest: ""
+  worker:
+    digest: ""
+  web:
+    digest: ""
+
+replicas:
+  api: 2
+  worker: 1
+  web: 2
+
+resources:
+  api:
+    requests: { cpu: 50m, memory: 32Mi }
+    limits: { cpu: 500m, memory: 128Mi }
+  worker:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  web:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+keyValue:
+  # In cluster Valkey for self contained environments. Set enabled: false and
+  # externalUrl to use a managed Redis compatible service instead.
+  enabled: true
+  image: valkey/valkey:8-alpine
+  externalUrl: ""
+
+# Network policies restrict traffic to what each service needs.
+networkPolicy:
+  enabled: true
+
+service:
+  type: ClusterIP

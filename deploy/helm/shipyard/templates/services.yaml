@@ -1,0 +1,91 @@
+{{- /*
+One Deployment and Service per application service. The table below is the
+only place where the services differ: port, user, readiness path and wiring.
+*/ -}}
+{{- $root := . -}}
+{{- $kvUrl := include "shipyard.kvUrl" . -}}
+{{- $services := list
+  (dict "name" "api" "port" 8080 "uid" 65532 "ready" "/readyz"
+        "env" (dict "WORKER_URL" (printf "http://%s-worker:8081" .Release.Name) "KV_URL" $kvUrl))
+  (dict "name" "worker" "port" 8081 "uid" 10001 "ready" "/readyz"
+        "env" (dict "KV_URL" $kvUrl "PYTHONDONTWRITEBYTECODE" "1"))
+  (dict "name" "web" "port" 8082 "uid" 1000 "ready" "/healthz"
+        "env" (dict "API_URL" (printf "http://%s-api:8080" .Release.Name)))
+-}}
+{{- range $svc := $services }}
+{{- $ctx := dict "root" $root "name" $svc.name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shipyard.fullname" $ctx }}
+  labels:
+    {{- include "shipyard.labels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $svc.name }}
+spec:
+  replicas: {{ index $root.Values.replicas $svc.name }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "shipyard.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shipyard.labels" $root | nindent 8 }}
+        app.kubernetes.io/name: {{ $svc.name }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: {{ $svc.uid }}
+        runAsGroup: {{ $svc.uid }}
+        runAsNonRoot: true
+      containers:
+        - name: {{ $svc.name }}
+          image: {{ include "shipyard.image" $ctx }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+          env:
+            - { name: PORT, value: {{ $svc.port | quote }} }
+            - { name: APP_ENV, value: {{ $root.Values.environment | quote }} }
+            - { name: KEY_PREFIX, value: {{ printf "%s:" $root.Values.environment | quote }} }
+            - { name: REPO_URL, value: {{ $root.Values.repoUrl | quote }} }
+            - { name: IMAGE_REF, value: {{ include "shipyard.image" $ctx | quote }} }
+            {{- range $key, $value := $svc.env }}
+            - { name: {{ $key }}, value: {{ $value | quote }} }
+            {{- end }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: {{ $svc.ready }}, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml (index $root.Values.resources $svc.name) | nindent 12 }}
+          securityContext:
+            {{- include "shipyard.containerSecurity" $root | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shipyard.fullname" $ctx }}
+  labels:
+    {{- include "shipyard.labels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $svc.name }}
+spec:
+  type: {{ $root.Values.service.type }}
+  selector:
+    {{- include "shipyard.selector" $ctx | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: http
+{{- end }}
