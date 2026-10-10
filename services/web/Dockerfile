@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Build stage: install all dependencies, compile TypeScript, then drop dev dependencies.
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
@@ -9,7 +9,7 @@ COPY . .
 RUN npm run build && npm prune --omit=dev
 
 # Runtime stage: compiled output and production dependencies only, non-root user.
-FROM node:24-alpine
+FROM node:25-alpine
 ARG VERSION=dev
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
