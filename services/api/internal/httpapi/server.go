@@ -153,7 +153,7 @@ func (s *Server) workerStatus(ctx context.Context) ServiceStatus {
 		// A timeout usually means the free instance is cold starting.
 		return ServiceStatus{Name: "worker", State: "waking", Error: "no response yet, the instance may be starting"}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 	if resp.StatusCode != http.StatusOK || !json.Valid(body) {
 		return ServiceStatus{Name: "worker", State: "down", Error: resp.Status}

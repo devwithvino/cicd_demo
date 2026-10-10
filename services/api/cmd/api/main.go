@@ -35,7 +35,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	client := redis.NewClient(opts)
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			logger.Warn("closing key value client failed", "error", err)
+		}
+	}()
 
 	server := httpapi.New(cfg, jobs.NewStore(client, cfg.KeyPrefix), logger)
 	httpServer := &http.Server{
