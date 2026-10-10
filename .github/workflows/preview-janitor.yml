@@ -1,0 +1,35 @@
+# Nightly janitor: Render does not delete image previews on its own, and a
+# cleanup can be missed (for example when a workflow run is cancelled). This
+# deletes any preview whose pull request is no longer open.
+name: preview-janitor
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  janitor:
+    name: Delete orphaned previews
+    runs-on: ubuntu-24.04
+    environment:
+      name: preview
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Delete previews of closed pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          open=$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 200 --json number --jq '[.[].number] | join(",")')
+          echo "Open pull requests: ${open:-none}"
+          cd scripts && python3 render_preview.py janitor --keep "${open}"
