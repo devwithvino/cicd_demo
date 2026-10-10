@@ -45,6 +45,9 @@ updates:
       # typescript-eslint supports TypeScript below 6.1 only.
       - dependency-name: typescript
         update-types: [version-update:semver-minor, version-update:semver-major]
+      # Node type definitions must match the Node LTS line the images run (24).
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
     directories: [/services/api, /services/worker, /services/web]
@@ -52,6 +55,10 @@ updates:
     cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
+    ignore:
+      # Stay on the Node LTS line. Majors move by deliberate decision.
+      - dependency-name: node
+        update-types: [version-update:semver-major]
     groups:
       base-images:
         update-types: [minor, patch]
@@ -62,6 +69,10 @@ updates:
     cooldown: { default-days: 7 }
     commit-message: { prefix: "chore(deps)" }
     labels: [dependencies]
+    ignore:
+      # The local Key Value mirrors Render's managed Valkey 8.
+      - dependency-name: valkey/valkey
+        update-types: [version-update:semver-major]
     groups:
       compose-images:
         update-types: [minor, patch]
