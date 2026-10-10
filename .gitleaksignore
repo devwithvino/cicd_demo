@@ -1,0 +1,7 @@
+# Findings listed here were reviewed and are known to be safe to ignore.
+# Every entry needs a reason, a date and the action taken.
+
+# 2026-10-10: GitHub App private key committed by mistake in aa13410 and
+# removed in 0a69eaf. The key was deleted in the App settings and replaced
+# with a new key stored only as an Actions secret. The leaked key is useless.
+aa13410e5468f20b809424739caef3b37733d18c:shipyard-release.2026-10-09.private-key.pem:private-key:1
