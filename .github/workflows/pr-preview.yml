@@ -50,6 +50,20 @@ jobs:
       git_sha: ${{ github.event.pull_request.head.sha }}
       extra_tags: pr-${{ github.event.pull_request.number }}
 
+  kubernetes:
+    name: Kubernetes
+    needs: [version, build]
+    permissions:
+      contents: read
+      attestations: read
+    uses: ./.github/workflows/_kind-e2e.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      registry: ${{ needs.build.outputs.registry }}
+      git_sha: ${{ github.event.pull_request.head.sha }}
+      version: ${{ needs.version.outputs.version }}
+      signer_ref: refs/pull/${{ github.event.pull_request.number }}/merge
+
   deploy:
     name: Deploy preview
     needs: [version, build]

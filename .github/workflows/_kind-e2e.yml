@@ -1,0 +1,134 @@
+# Reusable "deploy anywhere" proof: install the exact digests promoted to
+# Render on a throwaway Kubernetes cluster (Kind) inside GitHub Actions with
+# the Helm chart, then run helm tests, the shared smoke test and a k6
+# performance gate. Same images, different platform, no changes.
+name: _kind-e2e
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: JSON map of service name to image digest
+        required: true
+        type: string
+      registry:
+        description: Image name prefix, for example ghcr.io/owner/shipyard
+        required: true
+        type: string
+      git_sha:
+        description: Commit every service must report
+        required: true
+        type: string
+      version:
+        description: Release version, used in the summary
+        required: true
+        type: string
+      signer_ref:
+        description: Git ref whose build workflow must have signed the images
+        required: false
+        type: string
+        default: refs/heads/main
+
+permissions: {}
+
+jobs:
+  kind:
+    name: kubernetes (kind + helm)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      REGISTRY: ${{ inputs.registry }}
+      DIGESTS: ${{ inputs.digests }}
+      GIT_SHA: ${{ inputs.git_sha }}
+      VERSION: ${{ inputs.version }}
+      SIGNER_REF: ${{ inputs.signer_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify the images are the signed release candidates
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          identity="^https://github\.com/${REPO}/\.github/workflows/_build\.yml@${SIGNER_REF}$"
+          for svc in $(echo "${DIGESTS}" | jq -r 'keys[]'); do
+            ref="${REGISTRY}-${svc}@$(echo "${DIGESTS}" | jq -r --arg s "${svc}" '.[$s]')"
+            cosign verify "${ref}" --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "${identity}" > /dev/null
+            echo "${svc}: signature verified"
+          done
+
+      - name: Create a Kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: shipyard
+
+      - name: Install the chart with the promoted digests
+        run: |
+          started=$(date +%s)
+          helm install shipyard deploy/helm/shipyard \
+            --set environment=kind \
+            --set images.api.digest="$(echo "${DIGESTS}" | jq -r .api)" \
+            --set images.worker.digest="$(echo "${DIGESTS}" | jq -r .worker)" \
+            --set images.web.digest="$(echo "${DIGESTS}" | jq -r .web)" \
+            --wait --timeout 5m
+          echo "INSTALL_SECONDS=$(( $(date +%s) - started ))" >> "$GITHUB_ENV"
+          kubectl get pods -o wide
+
+      - name: Helm test (inside the cluster)
+        run: helm test shipyard --logs --timeout 3m
+
+      - name: Smoke test (same script as Render)
+        run: |
+          kubectl port-forward svc/shipyard-web 18082:8082 > /dev/null 2>&1 &
+          kubectl port-forward svc/shipyard-api 18080:8080 > /dev/null 2>&1 &
+          kubectl port-forward svc/shipyard-worker 18081:8081 > /dev/null 2>&1 &
+          sleep 3
+          python3 scripts/smoke_test.py --web http://127.0.0.1:18082 --api http://127.0.0.1:18080 \
+            --worker http://127.0.0.1:18081 --expect-sha "${GIT_SHA}" --warmup-timeout 60 \
+            --title "Smoke test: kind" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Performance gate (k6)
+        run: |
+          docker run --rm --network host -v "${PWD}/tests/load:/scripts" \
+            grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34 \
+            run --quiet -e BASE_URL=http://127.0.0.1:18082 --summary-export /scripts/k6-summary.json /scripts/smoke.js
+          jq -r '.metrics as $m | [
+              "### Performance gate (k6): passed",
+              "",
+              "| Metric | Value | Threshold |",
+              "|---|---|---|",
+              "| Requests | \($m.http_reqs.count) | |",
+              "| Error rate | \($m.http_req_failed.value * 100 | floor)% | under 1% |",
+              "| Read p95 | \($m["http_req_duration{kind:read}"]["p(95)"] | floor) ms | under 300 ms |",
+              "| Write p95 | \($m["http_req_duration{kind:write}"]["p(95)"] | floor) ms | under 500 ms |"
+            ] | .[]' tests/load/k6-summary.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Same images on Kubernetes: ${VERSION}"
+            echo ""
+            echo "Installed with Helm on a fresh Kind cluster in ${INSTALL_SECONDS}s, using the exact digests promoted to Render."
+            echo ""
+            echo "| Service | Digest |"
+            echo "|---|---|"
+            echo "${DIGESTS}" | jq -r 'to_entries[] | "| \(.key) | `\(.value)` |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get all -o wide || true
+          kubectl describe pods || true
+          for app in api worker web kv; do
+            echo "::group::logs ${app}"
+            kubectl logs -l "app.kubernetes.io/name=${app}" --tail=100 --all-containers || true
+            echo "::endgroup::"
+          done
