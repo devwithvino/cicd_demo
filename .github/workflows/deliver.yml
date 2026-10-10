@@ -12,6 +12,9 @@ on:
       - "docs/**"
       - "**.md"
       - "LICENSE"
+      - "status-site/**"
+      - "scripts/dora_metrics.py"
+      - ".github/workflows/status-page.yml"
   workflow_dispatch:
 
 permissions: {}
@@ -93,6 +96,20 @@ jobs:
       contents: write
       packages: write
     steps:
+      # The built in token may not tag a commit whose workflow files differ
+      # from main, which happens when main moves on while a release waits for
+      # approval. A GitHub App token is short lived, scoped to this repository
+      # and allowed to do it. Without the App the built in token is used.
+      - name: Mint a short lived release token
+        id: app-token
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -114,7 +131,7 @@ jobs:
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           REGISTRY: ${{ needs.build.outputs.registry }}
           DIGESTS: ${{ needs.build.outputs.digests }}
           VERSION: ${{ needs.version.outputs.version }}

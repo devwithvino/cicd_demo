@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shipyard Status</title>
+    <meta name="description" content="Live health, deployment history and DORA metrics for the Shipyard delivery pipeline." />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap top-inner">
+        <div>
+          <h1>Shipyard pipeline status</h1>
+          <p class="sub">Live health and delivery performance, measured from real pipeline runs.</p>
+        </div>
+        <div class="top-links">
+          <a id="repo-link" class="button ghost" href="#">Source</a>
+          <a id="runs-link" class="button" href="#">Pipeline runs</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section aria-labelledby="env-title">
+        <div class="head">
+          <h2 id="env-title">Environments</h2>
+          <span id="live-checked" class="muted">checking live services...</span>
+        </div>
+        <p class="note" id="wake-note" hidden>
+          Some services are waking up. Free tier instances sleep after 15 minutes idle and take about a minute to start.
+          This page checks again on its own.
+        </p>
+        <div id="environments" class="env-grid"></div>
+      </section>
+
+      <section aria-labelledby="dora-title">
+        <div class="head">
+          <h2 id="dora-title">DORA metrics</h2>
+          <span id="dora-window" class="muted"></span>
+        </div>
+        <p class="muted explain">
+          The four key measures of software delivery performance from the DORA research program. Ratings use the published
+          elite, high, medium and low bands.
+        </p>
+        <div id="dora" class="tiles"></div>
+        <div id="extra" class="tiles small"></div>
+      </section>
+
+      <section aria-labelledby="deploys-title" class="panel">
+        <h2 id="deploys-title">Deployment history</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When (UTC)</th><th>Environment</th><th>Version</th><th>Workflow</th><th>Result</th><th>Deploy time</th><th>Run</th>
+              </tr>
+            </thead>
+            <tbody id="deployments"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="two-col">
+        <section aria-labelledby="releases-title" class="panel">
+          <h2 id="releases-title">Releases</h2>
+          <ul id="releases" class="list"></ul>
+        </section>
+        <section aria-labelledby="incidents-title" class="panel">
+          <h2 id="incidents-title">Incidents</h2>
+          <ul id="incidents" class="list"></ul>
+        </section>
+      </div>
+    </main>
+
+    <footer class="wrap footer muted" id="footer">Loading pipeline data...</footer>
+  </body>
+</html>

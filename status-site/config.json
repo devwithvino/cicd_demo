@@ -1,0 +1,18 @@
+{
+  "title": "Shipyard pipeline status",
+  "repository": "devwithvino/cicd_demo",
+  "environments": [
+    {
+      "name": "production",
+      "web": "https://shipyard-web-production.onrender.com",
+      "api": "https://shipyard-api-production.onrender.com",
+      "worker": "https://shipyard-worker-production.onrender.com"
+    },
+    {
+      "name": "staging",
+      "web": "https://shipyard-web-staging.onrender.com",
+      "api": "https://shipyard-api-staging-e87x.onrender.com",
+      "worker": "https://shipyard-worker-staging.onrender.com"
+    }
+  ]
+}
