@@ -2,7 +2,7 @@
 
 # Build stage runs on the builder's native platform and cross compiles,
 # so multi-arch builds never need slow emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:c95332c2af86b6d89b91bd0500f4b9529ccbd090a0d1855c6d1ceaa142ae8615 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
