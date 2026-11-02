@@ -84,7 +84,7 @@ services:
 
   # Observability profile: only started with --profile observability.
   prometheus:
-    image: prom/prometheus:v3.15.0
+    image: prom/prometheus:v3.15.1
     profiles: ["observability"]
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=1d"]
     volumes:
