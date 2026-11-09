@@ -18,16 +18,16 @@
   },
   "dependencies": {
     "@prometheus-io/client": "^0.16.1",
-    "@sentry/node": "^11.9.0"
+    "@sentry/node": "^11.10.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.19.2",
     "@vitest/coverage-v8": "^5.0.5",
-    "eslint": "^10.13.0",
-    "globals": "^17.13.0",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.72.0",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.3"
   }
 }
